@@ -6,7 +6,8 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
 import { pathToFileURL } from 'url';
-import { readDb, writeDb, uid } from './db/store.js';
+import { initDb, readDb, writeDb, uid, usingPostgres } from './db/store.js';
+import { getPool } from './db/pg.js';
 import { authRequired } from './middleware/auth.js';
 import { machines as seedMachines } from './modules/machines.js';
 
@@ -389,10 +390,11 @@ app.post('/api/wallet/deposit', authRequired, (req, res) => {
   if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
   const recent = db.transactions.find(t => t.userId === user.id && t.type === 'deposit' && Number(t.amount) === amt && t.method === (method||'otp') && (Date.now() - new Date(t.createdAt).getTime()) < 60000);
   if (recent) return res.status(400).json({ error: 'Dépôt déjà soumis, veuillez patienter' });
+  // crédit immédiat au solde, mais en attente de confirmation admin (bloque l'achat de machine tant que non confirmé)
   user.balance = (user.balance || 0) + amt;
-  const tx = { id: uid('tx'), userId: user.id, type: 'deposit', amount: amt, status: 'confirmed', method: method || 'otp', label: 'Dépôt', createdAt: new Date().toISOString() };
+  const tx = { id: uid('tx'), userId: user.id, type: 'deposit', amount: amt, status: 'pending', method: method || 'otp', label: 'Dépôt', createdAt: new Date().toISOString() };
   db.transactions.push(tx);
-  db.notifications.push({ id: uid('ntf'), userId: user.id, title: 'Dépôt confirmé', text: `Votre dépôt de ${amt.toLocaleString('fr-FR')} FCFA a été confirmé.`, type: 'wallet', read: false, createdAt: new Date().toISOString() });
+  db.notifications.push({ id: uid('ntf'), userId: user.id, title: 'Dépôt soumis', text: `Votre dépôt de ${amt.toLocaleString('fr-FR')} FCFA a été ajouté à votre solde et est en attente de confirmation.`, type: 'wallet', read: false, createdAt: new Date().toISOString() });
   writeDb(db);
   res.json({ balance: user.balance, transaction: tx });
 });
@@ -745,8 +747,7 @@ app.patch('/api/admin/transactions/:id', adminRequired, (req, res) => {
   if (!['deposit','withdraw'].includes(tx.type)) return res.status(400).json({ error: 'Action non supportée pour ce type' });
   // pas de remboursement en cas de rejet de retrait
   if (tx.type === 'deposit' && tx.status === 'pending' && status === 'confirmed') {
-    const user = db.users.find(u => u.id === tx.userId);
-    if (user) user.balance = (user.balance || 0) + Number(tx.amount || 0);
+    // solde déjà crédité à la soumission du dépôt; la confirmation admin valide le dépôt (débloque les achats)
   }
   tx.status = status;
   logAdmin(db, req, 'transaction.update', { id: tx.id, type: tx.type, status });
@@ -873,40 +874,93 @@ app.get('/api/admin/referrals/tree', adminRequired, (req, res) => {
 });
 
 
-app.post('/api/purchases/:id/collect', authRequired, (req, res) => {
-  const db = readDb();
-  const p = db.purchases.find(x => x.id === req.params.id && x.userId === req.user.id);
-  if (!p) return res.status(404).json({ error: 'Produit introuvable' });
-  const ep = enrichPurchase(p, db);
-  if (!ep.collectableAmount || ep.collectableAmount <= 0) {
-    return res.status(400).json({ error: 'Aucun gain à récolter pour le moment' });
+app.post('/api/purchases/:id/collect', authRequired, async (req, res) => {
+  try {
+    if (usingPostgres()) {
+      const pool = getPool();
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const pRes = await client.query('SELECT * FROM purchases WHERE id=$1 AND user_id=$2 FOR UPDATE', [req.params.id, req.user.id]);
+        if (!pRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Produit introuvable' }); }
+        const p = pRes.rows[0];
+        const daysElapsed = Math.min(Number(p.duration_days||0), Math.max(0, Math.floor((Date.now() - new Date(p.created_at).getTime()) / 86400000)));
+        for (let d=0; d<daysElapsed; d++) {
+          const date = new Date(new Date(p.created_at).getTime() + d*86400000).toISOString().slice(0,10);
+          const eid = `me_${p.id}_${date}`;
+          await client.query(`INSERT INTO machine_earnings (id,purchase_id,user_id,earning_date,amount,status,created_at)
+            VALUES ($1,$2,$3,$4,$5,'available',NOW()) ON CONFLICT (purchase_id,earning_date) DO NOTHING`,
+            [eid, p.id, p.user_id, date, Number(p.daily_revenue||0)]);
+        }
+        const avail = await client.query(`SELECT COALESCE(SUM(amount),0) AS total, COUNT(*)::int AS days FROM machine_earnings WHERE purchase_id=$1 AND user_id=$2 AND status='available'`, [p.id, req.user.id]);
+        const total = Number(avail.rows[0]?.total || 0);
+        if (total <= 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Aucun gain à récolter pour le moment' }); }
+
+        await client.query('UPDATE users SET balance = balance + $1, updated_at=NOW() WHERE id=$2', [total, req.user.id]);
+        await client.query(`UPDATE machine_earnings SET status='collected', collected_at=NOW() WHERE purchase_id=$1 AND user_id=$2 AND status='available'`, [p.id, req.user.id]);
+
+        const mRes = await client.query('SELECT name FROM machines WHERE id=$1', [p.machine_id]);
+        const mName = mRes.rows[0]?.name || 'Machine';
+        const txId = uid('tx');
+        const nowIso = new Date().toISOString();
+        await client.query(`INSERT INTO transactions (id,user_id,type,amount,status,label,created_at,updated_at)
+          VALUES ($1,$2,'bonus',$3,'confirmed',$4,$5,NOW())`, [txId, req.user.id, total, `Récolte gains - ${mName}`, nowIso]);
+        const ntfId = uid('ntf');
+        await client.query(`INSERT INTO notifications (id,user_id,title,text,type,read,created_at)
+          VALUES ($1,$2,$3,$4,'wallet',false,$5)`, [ntfId, req.user.id, 'Gains récoltés', `Vous avez récolté ${Number(total).toLocaleString('fr-FR')} FCFA.`, nowIso]);
+        // update bonus_total approx by recomputing not necessary now; keep in sync via reload
+        await client.query('COMMIT');
+        try { await initDb(); } catch {}
+        const db = readDb();
+        const user = db.users.find(u => u.id === req.user.id);
+        const pp = db.purchases.find(x => x.id === p.id);
+        const tx = (db.transactions || []).find(t => t.id === txId) || { id: txId, userId: req.user.id, type: 'bonus', amount: total, status: 'confirmed', label: `Récolte gains - ${mName}`, createdAt: nowIso };
+        return res.json({ balance: user?.balance ?? 0, bonus: computeBonusTotal(db, req.user.id), purchase: pp ? enrichPurchase(pp, db) : null, transaction: tx });
+      } catch (e) {
+        try { await client.query('ROLLBACK'); } catch {}
+        throw e;
+      } finally {
+        client.release();
+      }
+    }
+
+    const db = readDb();
+    const p = db.purchases.find(x => x.id === req.params.id && x.userId === req.user.id);
+    if (!p) return res.status(404).json({ error: 'Produit introuvable' });
+    const ep = enrichPurchase(p, db);
+    if (!ep.collectableAmount || ep.collectableAmount <= 0) {
+      return res.status(400).json({ error: 'Aucun gain à récolter pour le moment' });
+    }
+    const user = db.users.find(u => u.id === req.user.id);
+    if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    user.balance = Number(user.balance || 0) + Number(ep.collectableAmount);
+    p.collectedDays = Number(p.collectedDays || 0) + Number(ep.collectableDays);
+    const tx = {
+      id: uid('tx'),
+      userId: user.id,
+      type: 'bonus',
+      amount: ep.collectableAmount,
+      status: 'confirmed',
+      label: `Récolte gains - ${ep.machine?.name || 'Machine'}`,
+      createdAt: new Date().toISOString(),
+    };
+    db.transactions.push(tx);
+    user.bonus = computeBonusTotal(db, user.id);
+    db.notifications.push({
+      id: uid('ntf'),
+      userId: user.id,
+      title: 'Gains récoltés',
+      text: `Vous avez récolté ${Number(ep.collectableAmount).toLocaleString('fr-FR')} FCFA.`,
+      type: 'wallet',
+      read: false,
+      createdAt: new Date().toISOString(),
+    });
+    writeDb(db);
+    res.json({ balance: user.balance, bonus: user.bonus, purchase: enrichPurchase(p, db), transaction: tx });
+  } catch (e) {
+    console.error('collect error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
   }
-  const user = db.users.find(u => u.id === req.user.id);
-  if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
-  user.balance = Number(user.balance || 0) + Number(ep.collectableAmount);
-  p.collectedDays = Number(p.collectedDays || 0) + Number(ep.collectableDays);
-  const tx = {
-    id: uid('tx'),
-    userId: user.id,
-    type: 'bonus',
-    amount: ep.collectableAmount,
-    status: 'confirmed',
-    label: `Récolte gains - ${ep.machine?.name || 'Machine'}`,
-    createdAt: new Date().toISOString(),
-  };
-  db.transactions.push(tx);
-  user.bonus = computeBonusTotal(db, user.id);
-  db.notifications.push({
-    id: uid('ntf'),
-    userId: user.id,
-    title: 'Gains récoltés',
-    text: `Vous avez récolté ${Number(ep.collectableAmount).toLocaleString('fr-FR')} FCFA.`,
-    type: 'wallet',
-    read: false,
-    createdAt: new Date().toISOString(),
-  });
-  writeDb(db);
-  res.json({ balance: user.balance, bonus: user.bonus, purchase: enrichPurchase(p, db), transaction: tx });
 });
 
 export { app, calcReferral, creditReferralCommissionsForPurchase, getSettings, generateInviteCode, awardInviteMilestones, computeBonusTotal };
