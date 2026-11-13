@@ -448,13 +448,43 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-app.get('/api/auth/me', authRequired, (req, res) => {
-  const db = readDb();
-  const user = db.users.find(u => u.id === req.user.id);
-  if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
-  const shaped = ensureUserShape(user, db);
-  if (user.memberId) writeDb(db); // persist backfill if added
-  res.json(shaped);
+app.get('/api/auth/me', authRequired, async (req, res) => {
+  try {
+    if (usingPostgres()) {
+      const pool = getPool();
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const uRes = await client.query('SELECT * FROM users WHERE id=$1 FOR UPDATE', [req.user.id]);
+        if (!uRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Utilisateur introuvable' }); }
+        let memberId = uRes.rows[0].member_id || null;
+        if (!memberId) {
+          for (let i=0;i<20;i++){ const cand = String(Math.floor(10000+Math.random()*90000)); const c=await client.query('SELECT 1 FROM users WHERE member_id=$1 LIMIT 1',[cand]); if(!c.rowCount){ memberId=cand; break; } }
+          if(!memberId) memberId = String(Date.now()).slice(-5);
+          await client.query('UPDATE users SET member_id=$1, updated_at=NOW() WHERE id=$2', [memberId, req.user.id]);
+        }
+        await client.query('COMMIT');
+        try { await initDb(); } catch {}
+        const db = readDb();
+        const user = db.users.find(u => u.id === req.user.id);
+        if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+        return res.json(ensureUserShape(user, db));
+      } catch (e) {
+        try { await client.query('ROLLBACK'); } catch {}
+        throw e;
+      } finally { client.release(); }
+    }
+
+    const db = readDb();
+    const user = db.users.find(u => u.id === req.user.id);
+    if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    const shaped = ensureUserShape(user, db);
+    if (user.memberId) writeDb(db); // persist backfill if added
+    res.json(shaped);
+  } catch (e) {
+    console.error('auth/me error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
 // Profile
@@ -822,19 +852,42 @@ app.get('/api/notifications', authRequired, (req, res) => {
   const list = db.notifications.filter(n => n.userId === req.user.id).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
   res.json(list);
 });
-app.post('/api/notifications/read-all', authRequired, (req, res) => {
-  const db = readDb();
-  db.notifications.forEach(n => { if (n.userId === req.user.id) n.read = true; });
-  writeDb(db);
-  res.json({ ok: true });
+app.post('/api/notifications/read-all', authRequired, async (req, res) => {
+  try {
+    if (usingPostgres()) {
+      const pool = getPool();
+      await pool.query('UPDATE notifications SET read=true WHERE user_id=$1', [req.user.id]);
+      try { await initDb(); } catch {}
+      return res.json({ ok: true });
+    }
+    const db = readDb();
+    db.notifications.forEach(n => { if (n.userId === req.user.id) n.read = true; });
+    writeDb(db);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('notifications read-all error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
-app.post('/api/notifications/:id/read', authRequired, (req, res) => {
-  const db = readDb();
-  const n = (db.notifications || []).find(x => x.id === req.params.id && x.userId === req.user.id);
-  if (!n) return res.status(404).json({ error: 'Notification introuvable' });
-  n.read = true;
-  writeDb(db);
-  res.json({ ok: true });
+app.post('/api/notifications/:id/read', authRequired, async (req, res) => {
+  try {
+    if (usingPostgres()) {
+      const pool = getPool();
+      const r = await pool.query('UPDATE notifications SET read=true WHERE id=$1 AND user_id=$2', [req.params.id, req.user.id]);
+      if (r.rowCount === 0) return res.status(404).json({ error: 'Notification introuvable' });
+      try { await initDb(); } catch {}
+      return res.json({ ok: true });
+    }
+    const db = readDb();
+    const n = (db.notifications || []).find(x => x.id === req.params.id && x.userId === req.user.id);
+    if (!n) return res.status(404).json({ error: 'Notification introuvable' });
+    n.read = true;
+    writeDb(db);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('notification read error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
 // Referral
