@@ -22,6 +22,7 @@ const defaultDb = {
 let pool = null;
 let pgReady = false;
 let memoryDb = null;
+let persistChain = Promise.resolve();
 
 function getPool() {
   const url = process.env.DATABASE_URL;
@@ -324,21 +325,42 @@ export function readDb() {
   return readDbFile();
 }
 
+async function persistPgNow(db) {
+  const onErr = (label, err) => {
+    const msg = err?.message || String(err);
+    console.error(`${label}:`, msg);
+    try { if (memoryDb && typeof memoryDb === 'object') memoryDb._lastPersistError = { label, msg, at: new Date().toISOString() }; } catch {}
+    throw err;
+  };
+  try {
+    await persistToPg(db);
+    try { if (memoryDb && typeof memoryDb === 'object' && memoryDb._lastPersistError?.label === 'DB persist error') delete memoryDb._lastPersistError; } catch {}
+  } catch (e) { onErr('DB persist error', e); }
+  try {
+    await persistRelational(db);
+    try { if (memoryDb && typeof memoryDb === 'object' && memoryDb._lastPersistError?.label === 'Relational persist error') delete memoryDb._lastPersistError; } catch {}
+  } catch (e) { onErr('Relational persist error', e); }
+}
+
+export async function writeDbAsync(db) {
+  memoryDb = db;
+  if (getPool()) {
+    // serialize persistence to avoid overlapping full-state syncs
+    const job = persistChain.then(() => persistPgNow(db), () => persistPgNow(db));
+    persistChain = job.catch(() => {});
+    await job;
+  } else {
+    writeDbFile(db);
+  }
+}
+
 export function writeDb(db) {
   memoryDb = db;
   if (getPool()) {
-    // persist to app_state and also sync to relational tables (progressive migration)
-    const onErr = (label) => (err) => {
-      const msg = err?.message || String(err);
-      console.error(`${label}:`, msg);
-      try { if (memoryDb && typeof memoryDb === 'object') memoryDb._lastPersistError = { label, msg, at: new Date().toISOString() }; } catch {}
-    };
-    persistToPg(db).then(() => {
-      try { if (memoryDb && typeof memoryDb === 'object' && memoryDb._lastPersistError?.label === 'DB persist error') delete memoryDb._lastPersistError; } catch {}
-    }).catch(onErr('DB persist error'));
-    persistRelational(db).then(() => {
-      try { if (memoryDb && typeof memoryDb === 'object' && memoryDb._lastPersistError?.label === 'Relational persist error') delete memoryDb._lastPersistError; } catch {}
-    }).catch(onErr('Relational persist error'));
+    const job = persistChain.then(() => persistPgNow(db), () => persistPgNow(db));
+    persistChain = job.catch(() => {});
+    // keep sync API for compatibility; callers should prefer writeDbAsync when possible
+    job.catch(() => {});
   } else {
     writeDbFile(db);
   }
