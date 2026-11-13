@@ -25,7 +25,7 @@ export function ProfilePage() {
             </div>
             <div className="hero-info">
               <h2>{user?.username || 'Utilisateur'}</h2>
-              <p className="sub">{user?.phone || ''} · <span className="vip-gold">VIP {user?.vipLevel ?? 1}</span>{user?.memberId ? <span className="member-id"> · ID {user.memberId}</span> : null}</p>
+              <p className="sub">{user?.phone || ''} · <span className="vip-gold">VIP {user?.vipLevel ?? 0}</span>{user?.memberId ? <span className="member-id"> · ID {user.memberId}</span> : null}</p>
               <div className="code-pill">
                 <span>Mon code d'invitation</span>
                 <strong>{inviteCode}</strong>

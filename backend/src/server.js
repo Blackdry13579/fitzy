@@ -50,7 +50,7 @@ function getUserVipLevel(db, userId) {
     const idx = ms.findIndex(m => m.id === p.machineId);
     if (idx >= 0) maxVip = Math.max(maxVip, idx + 1);
   }
-  return maxVip || 1; // VIP 1 par défaut, ne descend jamais (max des achats)
+  return maxVip; // VIP 0 si aucune machine, sinon max des achats (ne descend jamais)
 }
 
 function publicUser(u) {

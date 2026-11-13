@@ -119,7 +119,7 @@ export function ReferralPage() {
                     <p className="mmeta">ID {m.memberId || '-'} • {m.phone || '-'}{m.createdAt ? ` • Inscrit le ${new Date(m.createdAt).toLocaleDateString('fr-FR')}` : ''}</p>
                   </div>
                 </div>
-                <div><span className="vip-badge"><Award size={10}/> <span className="vip-gold">VIP {m.vipLevel ?? 1}</span></span></div>
+                <div><span className="vip-badge"><Award size={10}/> <span className="vip-gold">VIP {m.vipLevel ?? 0}</span></span></div>
               </div>
             ))}
           </div>
