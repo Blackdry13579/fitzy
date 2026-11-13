@@ -27,9 +27,11 @@ export function ProfilePage() {
               <h2>{user?.username || 'Utilisateur'}</h2>
               <p className="sub">{user?.phone || ''} · <span className="vip-gold">VIP {user?.vipLevel ?? 0}</span>{user?.memberId ? <span className="member-id"> · ID {user.memberId}</span> : null}</p>
               <div className="code-pill">
-                <span>Mon code d'invitation</span>
-                <strong>{inviteCode}</strong>
-                <button onClick={() => copy(link)}><Copy size={14} /> Copier le lien</button>
+                <span>Lien d'invitation</span>
+                <div className="link-row">
+                  <span className="link-text">{link}</span>
+                  <button className="copy-icon" onClick={() => copy(link)} aria-label="Copier le lien" title="Copier le lien"><Copy size={18} /></button>
+                </div>
               </div>
             </div>
           </div>
@@ -98,9 +100,11 @@ export function ProfilePage() {
         .hero-info h2{margin:0 0 2px;font-size:20px;display:flex;align-items:center;gap:8px}
         .sub{margin:0 0 10px;font-size:13px;color:rgba(255,255,255,.92)}
         .code-pill{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.2);border-radius:14px;padding:10px}
-        .code-pill span{display:block;font-size:11px;color:rgba(255,255,255,.88);margin-bottom:2px}
-        .code-pill strong{display:block;font-size:16px;letter-spacing:.04em;margin-bottom:8px}
-        .code-pill button{width:100%;height:36px;display:inline-flex;align-items:center;justify-content:center;gap:6px;border:none;background:#fff;color:#1d4ed8;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer}
+        .code-pill > span{display:block;font-size:11px;color:rgba(255,255,255,.88);margin-bottom:6px}
+        .link-row{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.18);border-radius:10px;padding:8px 8px 8px 10px}
+        .link-text{flex:1;min-width:0;font-size:12px;color:#fff;word-break:break-all;line-height:1.3}
+        .copy-icon{flex-shrink:0;width:34px;height:34px;display:inline-flex;align-items:center;justify-content:center;border:none;background:#fff;color:#1d4ed8;border-radius:8px;cursor:pointer}
+        .copy-icon:hover{background:#eff6ff}
         .card{background:#fff;border:1px solid #e5e7eb;border-radius:22px;box-shadow:0 2px 10px rgba(17,24,39,.04)}
         .clay{background:linear-gradient(180deg,#ffffff,#f3f8ff);border:1px solid rgba(255,255,255,.8);box-shadow:8px 8px 20px rgba(148,163,184,.18), -6px -6px 16px rgba(255,255,255,.9), inset 0 1px 0 rgba(255,255,255,.8)}
         .clay-in{background:linear-gradient(180deg,#f8fbff,#eef5ff);border:1px solid rgba(255,255,255,.9);box-shadow:inset 3px 3px 6px rgba(148,163,184,.12), inset -3px -3px 6px rgba(255,255,255,.9)}
