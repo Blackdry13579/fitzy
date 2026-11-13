@@ -6,7 +6,7 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
 import { pathToFileURL } from 'url';
-import { initDb, readDb, writeDb, uid, usingPostgres } from './db/store.js';
+import { initDb, readDb, writeDb, writeDbAsync, uid, usingPostgres } from './db/store.js';
 import { getPool } from './db/pg.js';
 import * as pgDb from './db/relational.js';
 import { authRequired } from './middleware/auth.js';
@@ -432,7 +432,7 @@ app.post('/api/auth/register', async (req, res) => {
     user.bonus = computeBonusTotal(db, user.id);
     db.notifications.push({ id: uid('ntf'), userId: user.id, title: 'Bienvenue sur FITZONE', text: 'Votre compte a été créé avec succès. Bonus d’inscription de 600 FCFA ajouté à votre solde.', type: 'info', read: false, createdAt: new Date().toISOString() });
     if (referrer) awardInviteMilestones(db, referrer.id);
-    writeDb(db);
+    await writeDbAsync(db);
     const token = sign(user);
     res.json({ token, user: ensureUserShape(user, db) });
   } catch (e) {
@@ -567,7 +567,7 @@ app.patch('/api/profile', authRequired, async (req, res) => {
     if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
     if (username !== undefined) user.username = String(username).trim().slice(0, 20);
     if (onboardingDone !== undefined) user.onboardingDone = !!onboardingDone;
-    writeDb(db);
+    await writeDbAsync(db);
     res.json(ensureUserShape(user, db));
   } catch (e) {
     console.error('profile update error', e);
@@ -646,7 +646,7 @@ app.post('/api/wallet/deposit', authRequired, async (req, res) => {
     const tx = { id: uid('tx'), userId: user.id, type: 'deposit', amount: amt, status: 'pending', method: method || 'otp', label: 'Dépôt', createdAt: new Date().toISOString() };
     db.transactions.push(tx);
     db.notifications.push({ id: uid('ntf'), userId: user.id, title: 'Dépôt soumis', text: `Votre dépôt de ${amt.toLocaleString('fr-FR')} FCFA a été ajouté à votre solde et est en attente de confirmation.`, type: 'wallet', read: false, createdAt: new Date().toISOString() });
-    writeDb(db);
+    await writeDbAsync(db);
     res.json({ balance: user.balance, transaction: tx });
   } catch (e) {
     console.error('deposit error', e);
@@ -706,7 +706,7 @@ app.post('/api/wallet/withdraw', authRequired, async (req, res) => {
     user.balance -= amt;
     const tx = { id: uid('tx'), userId: user.id, type: 'withdraw', amount: amt, fee, received, status: 'pending', label: 'Retrait', phone, beneficiary, createdAt: new Date().toISOString() };
     db.transactions.push(tx);
-    writeDb(db);
+    await writeDbAsync(db);
     res.json({ balance: user.balance, transaction: tx });
   } catch (e) {
     console.error('withdraw error', e);
@@ -757,7 +757,7 @@ app.post('/api/wallet/claim-daily', authRequired, async (req, res) => {
     const tx = { id: uid('tx'), userId: user.id, type: 'bonus', amount: 50, status: 'confirmed', label: 'Bonus quotidien', createdAt: new Date().toISOString() };
     db.transactions.push(tx);
     user.bonus = computeBonusTotal(db, user.id);
-    writeDb(db);
+    await writeDbAsync(db);
     res.json({ balance: user.balance, bonus: user.bonus, transaction: tx });
   } catch (e) {
     console.error('claim-daily error', e);
@@ -964,7 +964,7 @@ app.post('/api/purchases', authRequired, async (req, res) => {
     db.transactions.push({ id: uid('tx'), userId: user.id, type: 'purchase', amount: -m.priceFcfa, status: 'confirmed', label: `Achat ${m.name}`, createdAt: new Date().toISOString() });
     db.notifications.push({ id: uid('ntf'), userId: user.id, title: 'Machine activée', text: `${m.name} a été activée avec succès.`, type: 'purchase', read: false, createdAt: new Date().toISOString() });
     creditReferralCommissionsForPurchase(db, purchase, user);
-    writeDb(db);
+    await writeDbAsync(db);
     res.json({ balance: user.balance, purchase });
   } catch (e) {
     console.error('purchase error', e);
@@ -991,7 +991,7 @@ app.post('/api/notifications/read-all', authRequired, async (req, res) => {
     }
     const db = readDb();
     db.notifications.forEach(n => { if (n.userId === req.user.id) n.read = true; });
-    writeDb(db);
+    await writeDbAsync(db);
     res.json({ ok: true });
   } catch (e) {
     console.error('notifications read-all error', e);
@@ -1012,7 +1012,7 @@ app.post('/api/notifications/:id/read', authRequired, async (req, res) => {
     const n = (db.notifications || []).find(x => x.id === req.params.id && x.userId === req.user.id);
     if (!n) return res.status(404).json({ error: 'Notification introuvable' });
     n.read = true;
-    writeDb(db);
+    await writeDbAsync(db);
     res.json({ ok: true });
   } catch (e) {
     console.error('notification read error', e);
@@ -1152,7 +1152,7 @@ app.post('/api/admin/recover/reset', async (req, res) => {
     db.settings = s;
     delete db.adminRecovery;
     logAdmin(db, req, 'admin.credentials_reset', { phone: s.adminPhone });
-    writeDb(db);
+    await writeDbAsync(db);
     res.json({ ok: true, message: 'Identifiants admin mis à jour. Vous pouvez vous connecter.' });
   } catch (e) { console.error('admin recover reset error', e); res.status(500).json({ error: 'Erreur serveur' }); }
 });
@@ -1309,7 +1309,7 @@ app.patch('/api/admin/settings', adminRequired, async (req, res) => {
     const db = readDb();
     db.settings = s;
     logAdmin(db, req, 'settings.update', { keys: Object.keys(b) });
-    writeDb(db);
+    await writeDbAsync(db);
     res.json(getSettings(db));
   } catch (e) {
     console.error('admin settings update error', e);
@@ -1384,7 +1384,7 @@ app.get('/api/admin/users', adminRequired, async (_req, res) => {
     }
     const db = readDb();
     res.json(db.users.map(u => adminPublicUser(db, u)));
-    writeDb(db);
+    await writeDbAsync(db);
   } catch (e) { console.error('admin users error', e); res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
@@ -1506,7 +1506,7 @@ app.patch('/api/admin/transactions/:id', adminRequired, async (req, res) => {
     // dépôt: solde déjà crédité à la soumission (pending); confirmation admin valide/débloque l'achat, pas de recrédit.
     tx.status = status;
     logAdmin(db, req, 'transaction.update', { id: tx.id, type: tx.type, from: prevStatus, status });
-    writeDb(db);
+    await writeDbAsync(db);
     const txUser = db.users.find(u=>u.id===tx.userId);
     res.json({ ...tx, user: txUser ? adminPublicUser(db, txUser) : { id: tx.userId } });
   } catch (e) {
@@ -1598,7 +1598,7 @@ app.get('/api/admin/users/:id', adminRequired, async (req, res) => {
     const txs = db.transactions.filter(t => t.userId === u.id).sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
     const purchases = db.purchases.filter(p => p.userId === u.id);
     const view = { ...adminPublicUser(db, u), referrer, directReferrals: direct, referral: calcReferral(db, u.id), transactions: txs, purchases };
-    writeDb(db);
+    await writeDbAsync(db);
     res.json(view);
   } catch (e) { console.error('admin user detail error', e); res.status(500).json({ error: 'Erreur serveur' }); }
 });
@@ -1673,7 +1673,7 @@ app.patch('/api/admin/users/:id', adminRequired, async (req, res) => {
     }
     u.bonus = computeBonusTotal(db, u.id);
     logAdmin(db, req, 'user.update', { id: u.id, fields: changed });
-    writeDb(db);
+    await writeDbAsync(db);
     res.json(adminPublicUser(db, u));
   } catch (e) {
     console.error('admin user update error', e);
@@ -1955,7 +1955,7 @@ app.post('/api/purchases/:id/collect', authRequired, async (req, res) => {
       read: false,
       createdAt: new Date().toISOString(),
     });
-    writeDb(db);
+    await writeDbAsync(db);
     res.json({ balance: user.balance, bonus: user.bonus, purchase: enrichPurchase(p, db), transaction: tx });
   } catch (e) {
     console.error('collect error', e);
