@@ -396,13 +396,13 @@ app.post('/api/wallet/withdraw', authRequired, (req, res) => {
   if (!phone || !beneficiary) return res.status(400).json({ error: 'Numéro et nom du bénéficiaire requis' });
   const user = db.users.find(u => u.id === req.user.id);
   if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+  if ((user.balance || 0) < amt) return res.status(400).json({ error: 'Solde insuffisant' });
   const fee = Math.round(amt * (feePct / 100));
-  const total = amt + fee;
-  if ((user.balance || 0) < total) return res.status(400).json({ error: `Solde insuffisant (montant + frais ${feePct}%)` });
+  const received = Math.max(0, amt - fee);
   const recent = db.transactions.find(t => t.userId === user.id && t.type === 'withdraw' && t.status === 'pending' && Number(t.amount) === amt && t.phone === phone && (Date.now() - new Date(t.createdAt).getTime()) < 60000);
   if (recent) return res.status(400).json({ error: 'Demande de retrait déjà en cours de traitement' });
-  user.balance -= total;
-  const tx = { id: uid('tx'), userId: user.id, type: 'withdraw', amount: amt, fee, status: 'pending', label: 'Retrait', phone, beneficiary, createdAt: new Date().toISOString() };
+  user.balance -= amt;
+  const tx = { id: uid('tx'), userId: user.id, type: 'withdraw', amount: amt, fee, received, status: 'pending', label: 'Retrait', phone, beneficiary, createdAt: new Date().toISOString() };
   db.transactions.push(tx);
   writeDb(db);
   res.json({ balance: user.balance, transaction: tx });

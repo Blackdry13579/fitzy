@@ -45,9 +45,7 @@ export function ProfilePage() {
           </div>
           <div className="w-grid">
             <div className="wbox clay-in"><span>Disponible</span><strong>{balance.toLocaleString('fr-FR')} FCFA</strong></div>
-            <div className="wbox clay-in"><span>Gelé</span><strong>0 FCFA</strong></div>
             <div className="wbox clay-in"><span>Aujourd'hui</span><strong>0 FCFA</strong></div>
-            <div className="wbox clay-in"><span>Bonus</span><strong>{(user?.bonus ?? 0).toLocaleString('fr-FR')} FCFA</strong></div>
           </div>
           <div className="w-actions">
             <Link to="/depot" className="wbtn primary clay-btn">
@@ -123,7 +121,7 @@ export function ProfilePage() {
         @media (min-width: 900px){
           .content{max-width:1100px;width:100%;margin:0 auto;padding:24px 32px 32px}
           .grid4{grid-template-columns:repeat(4,1fr)}
-          .w-grid{grid-template-columns:repeat(4,1fr)}
+          .w-grid{grid-template-columns:repeat(2,1fr)}
         }
         @media (min-width: 1400px){ .content{max-width:1200px;padding:28px 40px 40px} }
         .gcard{border-radius:20px;padding:14px;display:flex;flex-direction:column;align-items:flex-start;gap:4px;text-decoration:none;color:inherit;cursor:pointer;text-align:left;border:none}

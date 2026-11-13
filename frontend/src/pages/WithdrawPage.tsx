@@ -88,7 +88,7 @@ export function WithdrawPage() {
               <span>Montant à retirer (FCFA)</span>
               <input className="input" type="number" placeholder="Entrez le montant" value={amount} onChange={e=>setAmount(e.target.value)} />
             </label>
-            <p className="limits">Retrait min : <strong>{min.toLocaleString('fr-FR')} FCFA</strong>{max ? <> · max : <strong>{max.toLocaleString('fr-FR')} FCFA</strong></> : null} · Frais : <strong>{feePct}%</strong></p>
+            <p className="limits">Retrait min : <strong>{min.toLocaleString('fr-FR')} FCFA</strong>{max ? <> · max : <strong>{max.toLocaleString('fr-FR')} FCFA</strong></> : null} · Frais : <strong>{feePct}%</strong> (déduits du montant)</p>
             <div className="chips">
               {presets.map(a => (
                 <button key={a} type="button" className={`chip ${amount===String(a)?'active':''}`} onClick={()=>setAmount(String(a))}>{a.toLocaleString('fr-FR')} F</button>
@@ -96,7 +96,7 @@ export function WithdrawPage() {
             </div>
 
             <div className="summary">
-              <div><span>Montant</span><strong>{amt.toLocaleString('fr-FR')} FCFA</strong></div>
+              <div><span>Montant débité</span><strong>{amt.toLocaleString('fr-FR')} FCFA</strong></div>
               <div><span>Frais ({feePct}%)</span><strong className="neg">-{fee.toLocaleString('fr-FR')} FCFA</strong></div>
               <div className="total"><span>Vous recevrez</span><strong>{received.toLocaleString('fr-FR')} FCFA</strong></div>
             </div>
