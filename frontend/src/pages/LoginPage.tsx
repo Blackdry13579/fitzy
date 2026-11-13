@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 const countries = [
@@ -16,6 +17,7 @@ export function LoginPage() {
   const [country, setCountry] = useState('BF');
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const selected = countries.find((c) => c.code === country) ?? countries[0];
@@ -92,7 +94,12 @@ export function LoginPage() {
             <p className="hint">{selected.length} chiffres requis pour {selected.name} (ex: {selected.example}).</p>
             <div className="field">
               <label>Mot de passe</label>
-              <input className="input" type="password" placeholder="Votre mot de passe" value={password} onChange={e=>setPassword(e.target.value)} required />
+              <div className="pass-wrap">
+                <input className="input" type={showPassword ? 'text' : 'password'} placeholder="Votre mot de passe" value={password} onChange={e=>setPassword(e.target.value)} required />
+                <button type="button" className="eye-btn" onClick={()=>setShowPassword(v=>!v)} aria-label={showPassword ? 'Masquer le mot de passe' : 'Afficher le mot de passe'}>
+                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
             </div>
             {error && <p className="err">{error}</p>}
             <div className="bottom-actions">
@@ -123,6 +130,10 @@ export function LoginPage() {
         .hint{margin:-4px 0 0;font-size:12px;color:#475569}
         .input { height: 48px; border: 1px solid #cbd5e1; border-radius: 12px; padding: 0 12px; font-size: 14px; width: 100%; background: #fff; }
         .input:focus{outline:none;border-color:#1d4ed8;box-shadow:0 0 0 3px rgba(30,64,175,.14)}
+        .pass-wrap{position:relative;display:flex;align-items:center}
+        .pass-wrap .input{padding-right:44px}
+        .eye-btn{position:absolute;right:8px;width:34px;height:34px;border:none;background:transparent;color:#64748b;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;border-radius:8px}
+        .eye-btn:hover{background:#f1f5f9;color:#1d4ed8}
         .country-select{position:relative;display:flex;align-items:center}
         .flag{position:absolute;left:10px;width:22px;height:16px;object-fit:cover;border-radius:3px;box-shadow:0 1px 3px rgba(0,0,0,.2)}
         .dial-code{position:absolute;left:38px;font-size:14px;font-weight:700;color:#1e40af;pointer-events:none}

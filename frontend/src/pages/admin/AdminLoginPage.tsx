@@ -1,11 +1,14 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Eye, EyeOff } from 'lucide-react';
 import { adminApi, setAdminToken } from '../../api/adminClient';
 
 export function AdminLoginPage() {
   const navigate = useNavigate();
   const [phone, setPhone] = useState('02040608');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [mode, setMode] = useState<'login'|'recover'>('login');
@@ -59,7 +62,14 @@ export function AdminLoginPage() {
           <>
             <form onSubmit={submit}>
               <label>Identifiant (téléphone)<input className="input" value={phone} onChange={e=>setPhone(e.target.value)} /></label>
-              <label>Mot de passe<input className="input" type="password" value={password} onChange={e=>setPassword(e.target.value)} /></label>
+              <label>Mot de passe
+                <div className="pass-wrap">
+                  <input className="input" type={showPassword ? 'text' : 'password'} value={password} onChange={e=>setPassword(e.target.value)} />
+                  <button type="button" className="eye-btn" onClick={()=>setShowPassword(v=>!v)} aria-label={showPassword ? 'Masquer le mot de passe' : 'Afficher le mot de passe'}>
+                    {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
+              </label>
               {error && <p className="err">{error}</p>}
               <button className="btn" disabled={loading}>{loading ? 'Connexion...' : 'Se connecter'}</button>
             </form>
@@ -76,7 +86,14 @@ export function AdminLoginPage() {
             <form onSubmit={resetCreds} className="rform">
               <label>Code reçu<input className="input" value={r.code} onChange={e=>setR({...r,code:e.target.value})} required /></label>
               <label>Nouvel identifiant admin<input className="input" value={r.phone} onChange={e=>setR({...r,phone:e.target.value})} required /></label>
-              <label>Nouveau mot de passe<input className="input" type="text" value={r.password} onChange={e=>setR({...r,password:e.target.value})} required /></label>
+              <label>Nouveau mot de passe
+                <div className="pass-wrap">
+                  <input className="input" type={showNewPassword ? 'text' : 'password'} value={r.password} onChange={e=>setR({...r,password:e.target.value})} required />
+                  <button type="button" className="eye-btn" onClick={()=>setShowNewPassword(v=>!v)} aria-label={showNewPassword ? 'Masquer le mot de passe' : 'Afficher le mot de passe'}>
+                    {showNewPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
+              </label>
               <label>Nouvel email de récupération (optionnel)<input className="input" type="email" value={r.email} onChange={e=>setR({...r,email:e.target.value})} /></label>
               <button className="btn" disabled={recLoading}>Valider et modifier les identifiants</button>
             </form>
@@ -95,8 +112,12 @@ export function AdminLoginPage() {
         form,.recover{display:grid;gap:12px}
         .rform{margin-top:4px}
         label{display:grid;gap:6px;font-size:14px;font-weight:600;color:#334155}
-        .input{height:46px;border:1px solid #cbd5e1;border-radius:12px;padding:0 12px;font-size:14px}
+        .input{height:46px;border:1px solid #cbd5e1;border-radius:12px;padding:0 12px;font-size:14px;width:100%}
         .input:focus{outline:none;border-color:#1d4ed8;box-shadow:0 0 0 3px rgba(30,64,175,.14)}
+        .pass-wrap{position:relative;display:flex;align-items:center}
+        .pass-wrap .input{padding-right:44px}
+        .eye-btn{position:absolute;right:8px;width:34px;height:34px;border:none;background:transparent;color:#64748b;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;border-radius:8px}
+        .eye-btn:hover{background:#f1f5f9;color:#1d4ed8}
         .btn{height:48px;border:none;border-radius:14px;background:linear-gradient(135deg,#2563eb,#1d4ed8 50%,#1e40af);color:#fff;font-weight:700;cursor:pointer;box-shadow:0 10px 22px rgba(30,58,138,.3)}
         .btn.secondary{background:#fff;color:#1d4ed8;border:1px solid #93c5fd;box-shadow:none}
         .linkbtn{margin-top:10px;background:none;border:none;color:#1d4ed8;font-weight:600;cursor:pointer;text-decoration:underline;font-size:13px}

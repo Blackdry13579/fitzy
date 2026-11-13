@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
+import { Eye, EyeOff } from 'lucide-react';
 import { adminApi } from '../../api/adminClient';
 
 export function AdminSettingsPage() {
   const [s, setS] = useState<any>(null);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
+  const [showAdminPass, setShowAdminPass] = useState(false);
   useEffect(()=>{ (async()=>{ try{ setS(await adminApi('/admin/settings')); }catch(e:any){ setErr(e.message);} })(); },[]);
   const presetsToStr = (v: any) => Array.isArray(v) ? v.join(', ') : (v || '');
   const save = async (e:any) => {
@@ -47,7 +49,14 @@ export function AdminSettingsPage() {
         <h3>Identifiants admin (connexion & récupération)</h3>
         <div className="grid">
           <label>Téléphone/identifiant admin<input value={s.adminPhone||''} onChange={e=>set('adminPhone',e.target.value)} /></label>
-          <label>Mot de passe admin<input type="text" value={s.adminPassword||''} onChange={e=>set('adminPassword',e.target.value)} /></label>
+          <label>Mot de passe admin
+            <div className="pass-wrap">
+              <input type={showAdminPass ? 'text' : 'password'} value={s.adminPassword||''} onChange={e=>set('adminPassword',e.target.value)} />
+              <button type="button" className="eye-btn" onClick={()=>setShowAdminPass(v=>!v)} aria-label={showAdminPass ? 'Masquer le mot de passe' : 'Afficher le mot de passe'}>
+                {showAdminPass ? <EyeOff size={18} /> : <Eye size={18} />}
+              </button>
+            </div>
+          </label>
           <label>Email de récupération admin<input type="email" value={s.adminEmail||''} onChange={e=>set('adminEmail',e.target.value)} placeholder="email pour recevoir le code" /></label>
         </div>
         <div className="actions"><button className="primary" type="submit">Enregistrer</button></div>
@@ -59,7 +68,11 @@ export function AdminSettingsPage() {
         .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
         label{display:grid;gap:6px;font-size:13px;font-weight:600;color:#334155}
         .wide{grid-column:1 / -1}
-        input{height:44px;border:1px solid #cbd5e1;border-radius:10px;padding:0 12px;font-size:14px}
+        input{height:44px;border:1px solid #cbd5e1;border-radius:10px;padding:0 12px;font-size:14px;width:100%}
+        .pass-wrap{position:relative;display:flex;align-items:center}
+        .pass-wrap input{padding-right:44px}
+        .eye-btn{position:absolute;right:8px;width:32px;height:32px;border:none;background:transparent;color:#64748b;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;border-radius:8px}
+        .eye-btn:hover{background:#f1f5f9;color:#1d4ed8}
         .actions{display:flex;justify-content:flex-end;margin-top:14px}
         .primary{height:42px;padding:0 16px;border:none;border-radius:12px;background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff;font-weight:700;cursor:pointer}
         .err{color:#dc2626}.okmsg{color:#16a34a;font-weight:600}

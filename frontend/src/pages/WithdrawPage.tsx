@@ -5,11 +5,20 @@ import { api } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import { NoticeModal } from '../components/Modal';
 
+const countries = [
+  { code: 'BF', name: 'Burkina Faso', dial: '+226', length: 8, example: '70000000', flag: 'https://flagcdn.com/w40/bf.png' },
+  { code: 'CI', name: 'Côte d’Ivoire', dial: '+225', length: 10, example: '0700000000', flag: 'https://flagcdn.com/w40/ci.png' },
+  { code: 'GN', name: 'Guinée', dial: '+224', length: 9, example: '620000000', flag: 'https://flagcdn.com/w40/gn.png' },
+  { code: 'ML', name: 'Mali', dial: '+223', length: 8, example: '70000000', flag: 'https://flagcdn.com/w40/ml.png' },
+  { code: 'NE', name: 'Niger', dial: '+227', length: 8, example: '90000000', flag: 'https://flagcdn.com/w40/ne.png' },
+];
+
 export function WithdrawPage() {
   const navigate = useNavigate();
   const { refresh } = useAuth();
   const [amount, setAmount] = useState<string>('');
-  const [number, setNumber] = useState('');
+  const [country, setCountry] = useState('BF');
+  const [phone, setPhone] = useState('');
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -18,6 +27,9 @@ export function WithdrawPage() {
   const [max, setMax] = useState(1000000);
   const [feePct, setFeePct] = useState(10);
   const [presets, setPresets] = useState<number[]>([1200, 5000, 10000, 25000, 50000]);
+  const selected = countries.find((c) => c.code === country) ?? countries[0];
+  const phoneDigits = phone.replace(/\D/g, '');
+
   useEffect(() => {
     api<any>('/settings').then(s => {
       if (s?.minWithdraw != null) setMin(Number(s.minWithdraw));
@@ -26,16 +38,33 @@ export function WithdrawPage() {
       if (Array.isArray(s?.withdrawPresets) && s.withdrawPresets.length) setPresets(s.withdrawPresets.map(Number).sort((a:number,b:number)=>a-b));
     }).catch(()=>{});
   }, []);
+
+  const onPhoneChange = (value: string) => {
+    const digits = value.replace(/\D/g, '').slice(0, selected.length);
+    setPhone(digits);
+  };
+  const onCountryChange = (code: string) => {
+    setCountry(code);
+    const c = countries.find((x) => x.code === code);
+    if (c) setPhone((p) => p.replace(/\D/g, '').slice(0, c.length));
+  };
+
   const amt = Number(amount || 0);
   const fee = Math.round(amt * (feePct / 100));
   const received = Math.max(0, amt - fee);
-  const valid = amt >= min && (!max || amt <= max) && number.trim() && name.trim();
+  const phoneValid = phoneDigits.length === selected.length;
+  const valid = amt >= min && (!max || amt <= max) && phoneValid && name.trim();
 
   const submit = async () => {
     setError('');
+    if (!phoneValid) {
+      setError(`Le numéro pour ${selected.name} doit contenir ${selected.length} chiffres (ex: ${selected.example}).`);
+      return;
+    }
     setLoading(true);
     try {
-      await api('/wallet/withdraw', { method: 'POST', body: JSON.stringify({ amount: amt, phone: number, beneficiary: name }) });
+      const fullPhone = `${selected.dial}${phoneDigits}`;
+      await api('/wallet/withdraw', { method: 'POST', body: JSON.stringify({ amount: amt, phone: fullPhone, beneficiary: name }) });
       await refresh();
       setSuccess(true);
     } catch (e: any) {
@@ -74,10 +103,23 @@ export function WithdrawPage() {
           </div>
 
           <div className="card-pad block clay">
-            <label className="field">
-              <span>Numéro de réception</span>
-              <input className="input" type="tel" placeholder="Ex: +226 07 00 00 00" value={number} onChange={e=>setNumber(e.target.value)} />
-            </label>
+            <div className="row-phone">
+              <div className="field">
+                <span>Pays</span>
+                <div className="country-select">
+                  <img src={selected.flag} alt="" className="flag" />
+                  <span className="dial-code">{selected.dial}</span>
+                  <select className="input country-input" value={country} onChange={(e) => onCountryChange(e.target.value)}>
+                    {countries.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="field">
+                <span>Numéro de réception</span>
+                <input className="input" type="tel" inputMode="numeric" placeholder={selected.example} value={phone} onChange={e=>onPhoneChange(e.target.value)} maxLength={selected.length} />
+              </div>
+            </div>
+            <p className="hint-phone">{selected.length} chiffres requis pour {selected.name} (ex: {selected.example}).</p>
             <label className="field" style={{marginTop:10}}>
               <span>Nom du bénéficiaire</span>
               <input className="input" type="text" placeholder="Nom complet" value={name} onChange={e=>setName(e.target.value)} />
@@ -110,6 +152,12 @@ export function WithdrawPage() {
         .summary div { display:flex; justify-content:space-between; }
         .neg { color:#dc2626; }
         .total { font-weight:700; color:#1d4ed8; }
+        .row-phone{display:grid;gap:10px}
+        .country-select{position:relative;display:flex;align-items:center}
+        .flag{position:absolute;left:10px;width:22px;height:16px;object-fit:cover;border-radius:3px;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+        .dial-code{position:absolute;left:38px;font-size:14px;font-weight:700;color:#1e40af;pointer-events:none}
+        .country-input{padding-left:88px}
+        .hint-phone{margin:6px 0 0;font-size:12px;color:#475569}
         .hint { margin:10px 0 0; font-size:13px; color:#111827; display:flex; align-items:center; gap:6px; }
         .mini3d{width:18px;height:18px;object-fit:contain}
         .btn-main { width:100%; height:48px; border:none; border-radius:16px; color:#fff; font-weight:700; font-size:15px; background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 45%, #2563eb 100%); box-shadow:6px 8px 16px rgba(37,99,235,.28); cursor:pointer; display:flex;align-items:center;justify-content:center;gap:8px; }
@@ -120,6 +168,7 @@ export function WithdrawPage() {
           .content{padding:24px 32px 40px;max-width:1100px;width:100%;margin:0 auto}
           .blocks-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
           .block{margin-bottom:0}
+          .row-phone{grid-template-columns:1fr 1fr;align-items:end}
           .btn-main{max-width:360px;height:50px;margin:8px auto 0}
         }
       `}</style>
