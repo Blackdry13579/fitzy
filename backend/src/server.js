@@ -1020,22 +1020,45 @@ app.get('/api/admin/settings', adminRequired, (_req, res) => {
   res.json(getSettings(db));
 });
 
-app.patch('/api/admin/settings', adminRequired, (req, res) => {
-  const db = readDb();
-  const s = getSettings(db);
-  const b = req.body || {};
-  const allowed = ['supportTelegram','depositNumber','merchantCode','minWithdraw','maxWithdraw','withdrawFeePercent','minDeposit','maxDeposit','depositPresets','withdrawPresets','adminPhone','adminPassword','adminEmail'];
-  for (const k of allowed) if (b[k] !== undefined) s[k] = b[k];
-  s.minWithdraw = Number(s.minWithdraw) || 0; s.maxWithdraw = Number(s.maxWithdraw) || 0; s.withdrawFeePercent = Number(s.withdrawFeePercent) || 0;
-  s.minDeposit = Number(s.minDeposit) || 0; s.maxDeposit = Number(s.maxDeposit) || 0;
-  if (typeof s.depositPresets === 'string') s.depositPresets = s.depositPresets.split(',').map(x=>Number(x.trim())).filter(n=>n>0);
-  if (typeof s.withdrawPresets === 'string') s.withdrawPresets = s.withdrawPresets.split(',').map(x=>Number(x.trim())).filter(n=>n>0);
-  if (!Array.isArray(s.depositPresets)) s.depositPresets = [];
-  if (!Array.isArray(s.withdrawPresets)) s.withdrawPresets = [];
-  db.settings = s;
-  logAdmin(db, req, 'settings.update', { keys: Object.keys(b) });
-  writeDb(db);
-  res.json(getSettings(db));
+app.patch('/api/admin/settings', adminRequired, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const db0 = readDb();
+    const s = getSettings(db0);
+    const allowed = ['supportTelegram','depositNumber','merchantCode','minWithdraw','maxWithdraw','withdrawFeePercent','minDeposit','maxDeposit','depositPresets','withdrawPresets','adminPhone','adminPassword','adminEmail'];
+    for (const k of allowed) if (b[k] !== undefined) s[k] = b[k];
+    s.minWithdraw = Number(s.minWithdraw) || 0; s.maxWithdraw = Number(s.maxWithdraw) || 0; s.withdrawFeePercent = Number(s.withdrawFeePercent) || 0;
+    s.minDeposit = Number(s.minDeposit) || 0; s.maxDeposit = Number(s.maxDeposit) || 0;
+    if (typeof s.depositPresets === 'string') s.depositPresets = s.depositPresets.split(',').map(x=>Number(x.trim())).filter(n=>n>0);
+    if (typeof s.withdrawPresets === 'string') s.withdrawPresets = s.withdrawPresets.split(',').map(x=>Number(x.trim())).filter(n=>n>0);
+    if (!Array.isArray(s.depositPresets)) s.depositPresets = [];
+    if (!Array.isArray(s.withdrawPresets)) s.withdrawPresets = [];
+
+    if (usingPostgres()) {
+      const pool = getPool();
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        for (const [k,v] of Object.entries(s)){
+          await client.query(`INSERT INTO settings (key,value,updated_at) VALUES ($1,$2::jsonb,NOW()) ON CONFLICT (key) DO UPDATE SET value=$2::jsonb, updated_at=NOW()`,[k, JSON.stringify(v)]);
+        }
+        await client.query('INSERT INTO audit_logs (id,action,details,admin,created_at) VALUES ($1,$2,$3::jsonb,$4,NOW())',[uid('log'),'settings.update', JSON.stringify({ keys: Object.keys(b) }), (req.admin?.phone||'admin')]);
+        await client.query('COMMIT');
+        try { await initDb(); } catch {}
+        return res.json(getSettings(readDb()));
+      } catch (e) { try { await client.query('ROLLBACK'); } catch {} throw e; }
+      finally { client.release(); }
+    }
+
+    const db = readDb();
+    db.settings = s;
+    logAdmin(db, req, 'settings.update', { keys: Object.keys(b) });
+    writeDb(db);
+    res.json(getSettings(db));
+  } catch (e) {
+    console.error('admin settings update error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
 app.get('/api/admin/audit', adminRequired, (_req, res) => {
@@ -1163,30 +1186,67 @@ app.get('/api/admin/users/:id', adminRequired, (req, res) => {
   res.json(view);
 });
 
-app.patch('/api/admin/users/:id', adminRequired, (req, res) => {
-  const db = readDb();
-  const u = db.users.find(x => x.id === req.params.id);
-  if (!u) return res.status(404).json({ error: 'Utilisateur introuvable' });
-  const { username, balance } = req.body || {};
-  const changed = [];
-  if (username !== undefined) { u.username = String(username).trim().slice(0, 30); changed.push('username'); }
-  if (balance !== undefined) {
-    const target = Number(balance);
-    if (!Number.isFinite(target) || target < 0) return res.status(400).json({ error: 'Solde invalide' });
-    const current = Number(u.balance || 0);
-    const delta = Math.round((target - current) * 100) / 100;
-    if (delta !== 0) {
-      u.balance = target;
-      db.transactions = db.transactions || [];
-      db.transactions.push({ id: uid('tx'), userId: u.id, type: 'adjustment', amount: delta, status: 'confirmed', label: 'Ajustement admin (solde)', createdAt: new Date().toISOString() });
-      changed.push('balance');
+app.patch('/api/admin/users/:id', adminRequired, async (req, res) => {
+  try {
+    const { username, balance } = req.body || {};
+    if (usingPostgres()) {
+      const pool = getPool();
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const uRes = await client.query('SELECT id,balance FROM users WHERE id=$1 FOR UPDATE', [req.params.id]);
+        if (!uRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Utilisateur introuvable' }); }
+        const changed = [];
+        if (username !== undefined) {
+          await client.query('UPDATE users SET username=$1, updated_at=NOW() WHERE id=$2', [String(username).trim().slice(0,30), req.params.id]);
+          changed.push('username');
+        }
+        if (balance !== undefined) {
+          const target = Number(balance);
+          if (!Number.isFinite(target) || target < 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Solde invalide' }); }
+          const current = Number(uRes.rows[0].balance || 0);
+          const delta = Math.round((target - current) * 100) / 100;
+          if (delta !== 0) {
+            await client.query('UPDATE users SET balance=$1, updated_at=NOW() WHERE id=$2', [target, req.params.id]);
+            await client.query(`INSERT INTO transactions (id,user_id,type,amount,status,label,created_at,updated_at) VALUES ($1,$2,'adjustment',$3,'confirmed','Ajustement admin (solde)',$4,NOW())`, [uid('tx'), req.params.id, delta, new Date().toISOString()]);
+            changed.push('balance');
+          }
+        }
+        await client.query('INSERT INTO audit_logs (id,action,details,admin,created_at) VALUES ($1,$2,$3::jsonb,$4,NOW())',[uid('log'),'user.update', JSON.stringify({ id: req.params.id, fields: changed }), (req.admin?.phone||'admin')]);
+        await client.query('COMMIT');
+        try { await initDb(); } catch {}
+        const db = readDb();
+        const u = db.users.find(x => x.id === req.params.id);
+        return res.json(u ? adminPublicUser(db, u) : { id: req.params.id });
+      } catch (e) { try { await client.query('ROLLBACK'); } catch {} throw e; }
+      finally { client.release(); }
     }
+
+    const db = readDb();
+    const u = db.users.find(x => x.id === req.params.id);
+    if (!u) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    const changed = [];
+    if (username !== undefined) { u.username = String(username).trim().slice(0, 30); changed.push('username'); }
+    if (balance !== undefined) {
+      const target = Number(balance);
+      if (!Number.isFinite(target) || target < 0) return res.status(400).json({ error: 'Solde invalide' });
+      const current = Number(u.balance || 0);
+      const delta = Math.round((target - current) * 100) / 100;
+      if (delta !== 0) {
+        u.balance = target;
+        db.transactions = db.transactions || [];
+        db.transactions.push({ id: uid('tx'), userId: u.id, type: 'adjustment', amount: delta, status: 'confirmed', label: 'Ajustement admin (solde)', createdAt: new Date().toISOString() });
+        changed.push('balance');
+      }
+    }
+    u.bonus = computeBonusTotal(db, u.id);
+    logAdmin(db, req, 'user.update', { id: u.id, fields: changed });
+    writeDb(db);
+    res.json(adminPublicUser(db, u));
+  } catch (e) {
+    console.error('admin user update error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
   }
-  // bonus total is derived from confirmed bonus/commission transactions; keep it consistent
-  u.bonus = computeBonusTotal(db, u.id);
-  logAdmin(db, req, 'user.update', { id: u.id, fields: changed });
-  writeDb(db);
-  res.json(adminPublicUser(db, u));
 });
 
 app.get('/api/admin/machines', adminRequired, (_req, res) => {
@@ -1194,52 +1254,130 @@ app.get('/api/admin/machines', adminRequired, (_req, res) => {
   res.json(getMachines(db));
 });
 
-app.post('/api/admin/machines', adminRequired, (req, res) => {
-  const db = readDb();
-  const ms = getMachines(db);
-  const b = req.body || {};
-  if (!b.name) return res.status(400).json({ error: 'Nom requis' });
-  const m = {
-    id: b.id || uid('m'),
-    name: String(b.name),
-    category: String(b.category || ''),
-    level: String(b.level || ''),
-    priceFcfa: Number(b.priceFcfa || 0),
-    dailyRevenueFcfa: Number(b.dailyRevenueFcfa || 0),
-    durationDays: Number(b.durationDays || 90),
-    description: String(b.description || ''),
-    image: String(b.image || ''),
-    imageCredit: String(b.imageCredit || ''),
-    locked: !!b.locked,
-  };
-  ms.push(m); db.machines = ms; logAdmin(db, req, 'machine.create', { id: m.id, name: m.name }); writeDb(db);
-  res.json(m);
+app.post('/api/admin/machines', adminRequired, async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.name) return res.status(400).json({ error: 'Nom requis' });
+    const m = {
+      id: b.id || uid('m'),
+      name: String(b.name),
+      category: String(b.category || ''),
+      level: String(b.level || ''),
+      priceFcfa: Number(b.priceFcfa || 0),
+      dailyRevenueFcfa: Number(b.dailyRevenueFcfa || 0),
+      durationDays: Number(b.durationDays || 90),
+      description: String(b.description || ''),
+      image: String(b.image || ''),
+      imageCredit: String(b.imageCredit || ''),
+      locked: !!b.locked,
+    };
+    if (usingPostgres()) {
+      const pool = getPool();
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const ordRes = await client.query('SELECT COALESCE(MAX(sort_order), -1) AS m FROM machines');
+        const sortOrder = Number(ordRes.rows[0]?.m ?? -1) + 1;
+        await client.query(`INSERT INTO machines (id,name,category,level,price_fcfa,daily_revenue_fcfa,duration_days,description,image,image_credit,locked,sort_order,created_at,updated_at)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW(),NOW())`,
+          [m.id,m.name,m.category,m.level,m.priceFcfa,m.dailyRevenueFcfa,m.durationDays,m.description,m.image,m.imageCredit,m.locked,sortOrder]);
+        await client.query('INSERT INTO audit_logs (id,action,details,admin,created_at) VALUES ($1,$2,$3::jsonb,$4,NOW())',[uid('log'),'machine.create', JSON.stringify({ id: m.id, name: m.name }), (req.admin?.phone||'admin')]);
+        await client.query('COMMIT');
+        try { await initDb(); } catch {}
+        return res.json(m);
+      } catch (e) { try { await client.query('ROLLBACK'); } catch {} throw e; }
+      finally { client.release(); }
+    }
+    const db = readDb();
+    const ms = getMachines(db);
+    ms.push(m); db.machines = ms; logAdmin(db, req, 'machine.create', { id: m.id, name: m.name }); writeDb(db);
+    res.json(m);
+  } catch (e) {
+    console.error('admin machine create error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
-app.put('/api/admin/machines/:id', adminRequired, (req, res) => {
-  const db = readDb();
-  const ms = getMachines(db);
-  const idx = ms.findIndex(x => x.id === req.params.id);
-  if (idx < 0) return res.status(404).json({ error: 'Machine introuvable' });
-  const b = req.body || {};
-  ms[idx] = { ...ms[idx], ...b, id: ms[idx].id,
-    priceFcfa: b.priceFcfa !== undefined ? Number(b.priceFcfa) : ms[idx].priceFcfa,
-    dailyRevenueFcfa: b.dailyRevenueFcfa !== undefined ? Number(b.dailyRevenueFcfa) : ms[idx].dailyRevenueFcfa,
-    durationDays: b.durationDays !== undefined ? Number(b.durationDays) : ms[idx].durationDays,
-    locked: b.locked !== undefined ? !!b.locked : ms[idx].locked,
-  };
-  db.machines = ms; logAdmin(db, req, 'machine.update', { id: ms[idx].id }); writeDb(db);
-  res.json(ms[idx]);
+app.put('/api/admin/machines/:id', adminRequired, async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (usingPostgres()) {
+      const pool = getPool();
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const ex = await client.query('SELECT * FROM machines WHERE id=$1 FOR UPDATE', [req.params.id]);
+        if (!ex.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Machine introuvable' }); }
+        const cur = ex.rows[0];
+        const next = {
+          name: b.name !== undefined ? String(b.name) : cur.name,
+          category: b.category !== undefined ? String(b.category) : cur.category,
+          level: b.level !== undefined ? String(b.level) : cur.level,
+          priceFcfa: b.priceFcfa !== undefined ? Number(b.priceFcfa) : Number(cur.price_fcfa),
+          dailyRevenueFcfa: b.dailyRevenueFcfa !== undefined ? Number(b.dailyRevenueFcfa) : Number(cur.daily_revenue_fcfa),
+          durationDays: b.durationDays !== undefined ? Number(b.durationDays) : Number(cur.duration_days),
+          description: b.description !== undefined ? String(b.description) : cur.description,
+          image: b.image !== undefined ? String(b.image) : cur.image,
+          imageCredit: b.imageCredit !== undefined ? String(b.imageCredit) : cur.image_credit,
+          locked: b.locked !== undefined ? !!b.locked : !!cur.locked,
+        };
+        await client.query(`UPDATE machines SET name=$1,category=$2,level=$3,price_fcfa=$4,daily_revenue_fcfa=$5,duration_days=$6,description=$7,image=$8,image_credit=$9,locked=$10,updated_at=NOW() WHERE id=$11`,
+          [next.name,next.category,next.level,next.priceFcfa,next.dailyRevenueFcfa,next.durationDays,next.description,next.image,next.imageCredit,next.locked,req.params.id]);
+        await client.query('INSERT INTO audit_logs (id,action,details,admin,created_at) VALUES ($1,$2,$3::jsonb,$4,NOW())',[uid('log'),'machine.update', JSON.stringify({ id: req.params.id }), (req.admin?.phone||'admin')]);
+        await client.query('COMMIT');
+        try { await initDb(); } catch {}
+        const db = readDb();
+        const m = (getMachines(db)||[]).find(x=>x.id===req.params.id);
+        return res.json(m || { id: req.params.id, ...next });
+      } catch (e) { try { await client.query('ROLLBACK'); } catch {} throw e; }
+      finally { client.release(); }
+    }
+
+    const db = readDb();
+    const ms = getMachines(db);
+    const idx = ms.findIndex(x => x.id === req.params.id);
+    if (idx < 0) return res.status(404).json({ error: 'Machine introuvable' });
+    ms[idx] = { ...ms[idx], ...b, id: ms[idx].id,
+      priceFcfa: b.priceFcfa !== undefined ? Number(b.priceFcfa) : ms[idx].priceFcfa,
+      dailyRevenueFcfa: b.dailyRevenueFcfa !== undefined ? Number(b.dailyRevenueFcfa) : ms[idx].dailyRevenueFcfa,
+      durationDays: b.durationDays !== undefined ? Number(b.durationDays) : ms[idx].durationDays,
+      locked: b.locked !== undefined ? !!b.locked : ms[idx].locked,
+    };
+    db.machines = ms; logAdmin(db, req, 'machine.update', { id: ms[idx].id }); writeDb(db);
+    res.json(ms[idx]);
+  } catch (e) {
+    console.error('admin machine update error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
-app.delete('/api/admin/machines/:id', adminRequired, (req, res) => {
-  const db = readDb();
-  let ms = getMachines(db);
-  const before = ms.length;
-  ms = ms.filter(x => x.id !== req.params.id);
-  if (ms.length === before) return res.status(404).json({ error: 'Machine introuvable' });
-  db.machines = ms; logAdmin(db, req, 'machine.delete', { id: req.params.id }); writeDb(db);
-  res.json({ ok: true });
+app.delete('/api/admin/machines/:id', adminRequired, async (req, res) => {
+  try {
+    if (usingPostgres()) {
+      const pool = getPool();
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const r = await client.query('DELETE FROM machines WHERE id=$1', [req.params.id]);
+        if (r.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Machine introuvable' }); }
+        await client.query('INSERT INTO audit_logs (id,action,details,admin,created_at) VALUES ($1,$2,$3::jsonb,$4,NOW())',[uid('log'),'machine.delete', JSON.stringify({ id: req.params.id }), (req.admin?.phone||'admin')]);
+        await client.query('COMMIT');
+        try { await initDb(); } catch {}
+        return res.json({ ok: true });
+      } catch (e) { try { await client.query('ROLLBACK'); } catch {} throw e; }
+      finally { client.release(); }
+    }
+    const db = readDb();
+    let ms = getMachines(db);
+    const before = ms.length;
+    ms = ms.filter(x => x.id !== req.params.id);
+    if (ms.length === before) return res.status(404).json({ error: 'Machine introuvable' });
+    db.machines = ms; logAdmin(db, req, 'machine.delete', { id: req.params.id }); writeDb(db);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('admin machine delete error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
 app.get('/api/admin/referrals/tree', adminRequired, (req, res) => {
