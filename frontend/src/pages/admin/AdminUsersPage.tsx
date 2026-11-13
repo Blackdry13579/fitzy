@@ -85,11 +85,11 @@ export function AdminUsersPage() {
           <div><label>Parrain (lié à)</label><p>{detail.referrer ? `${detail.referrer.username||'Utilisateur'} · ${detail.referrer.phone||''} · ID ${detail.referrer.memberId||'-'}` : 'Aucun'}</p></div>
           <div><label>Dernière activité</label><p>{detail.lastActiveAt ? new Date(detail.lastActiveAt).toLocaleString('fr-FR') : '-'}</p></div>
         </div>
-        {!edit ? <div className="actions"><button className="ok" onClick={()=>setEdit({username:detail.username,balance:detail.balance,bonus:detail.bonus||0})}>Modifier solde / profil</button></div> : (
+        {!edit ? <div className="actions"><button className="ok" onClick={()=>setEdit({username:detail.username,balance:detail.balance})}>Modifier solde / profil</button></div> : (
           <div className="edit">
             <label>Pseudo<input value={edit.username} onChange={e=>setEdit({...edit,username:e.target.value})}/></label>
             <label>Solde<input type="number" value={edit.balance} onChange={e=>setEdit({...edit,balance:e.target.value})}/></label>
-            <label>Bonus<input type="number" value={edit.bonus} onChange={e=>setEdit({...edit,bonus:e.target.value})}/></label>
+            <p className="hint">Le total Bonus est calculé automatiquement à partir des transactions (bonus/commissions confirmés).</p>
             <div className="actions"><button onClick={()=>setEdit(null)}>Annuler</button><button className="ok" onClick={save}>Enregistrer</button></div>
           </div>
         )}
@@ -147,6 +147,7 @@ export function AdminUsersPage() {
         .edit{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:14px;padding:12px;margin:8px 0}
         .edit label{display:grid;gap:6px;font-size:13px;font-weight:600}
         .edit input{border:1px solid #cbd5e1;border-radius:10px;padding:10px}
+        .hint{color:#64748b;font-size:12px;margin:0;grid-column:1/-1;align-self:center}
         .tt{padding:3px 8px;border-radius:999px;font-size:11px;font-weight:700;background:#f1f5f9;color:#334155;text-transform:capitalize}
         .tt.deposit{background:#dcfce7;color:#166534}.tt.withdraw{background:#ffe4e6;color:#9f1239}.tt.purchase{background:#dbeafe;color:#1d4ed8}.tt.bonus{background:#fef3c7;color:#92400e}
         .badge{padding:4px 8px;border-radius:999px;font-size:11px;font-weight:700;text-transform:capitalize}

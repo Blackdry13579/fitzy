@@ -58,6 +58,16 @@ function publicUser(u) {
   return rest;
 }
 
+function adminPublicUser(db, u) {
+  if (!u) return u;
+  const base = publicUser(u);
+  const bonus = computeBonusTotal(db, u.id);
+  const vipLevel = getUserVipLevel(db, u.id);
+  // keep stored bonus consistent when we expose computed value
+  if (u && u.id) u.bonus = bonus;
+  return { ...base, bonus, vipLevel };
+}
+
 function logAdmin(db, req, action, details = {}) {
   db.auditLogs = db.auditLogs || [];
   db.auditLogs.push({ id: uid('aud'), action, details, admin: req.admin?.phone || 'admin', createdAt: new Date().toISOString() });
@@ -665,7 +675,8 @@ app.get('/api/admin/referrals', adminRequired, (_req, res) => {
 
 app.get('/api/admin/users', adminRequired, (_req, res) => {
   const db = readDb();
-  res.json(db.users.map(publicUser));
+  res.json(db.users.map(u => adminPublicUser(db, u)));
+  writeDb(db);
 });
 
 app.get('/api/admin/transactions', adminRequired, (req, res) => {
@@ -677,7 +688,7 @@ app.get('/api/admin/transactions', adminRequired, (req, res) => {
   const enriched = list.map(t => {
     const u = db.users.find(x=>x.id===t.userId);
     const referrer = u?.referredBy ? db.users.find(x=>x.id===u.referredBy) : null;
-    return { ...t, user: publicUser(u || {id:t.userId}), referrer: referrer ? { id: referrer.id, username: referrer.username, phone: referrer.phone, memberId: referrer.memberId } : null };
+    return { ...t, user: u ? adminPublicUser(db, u) : { id: t.userId }, referrer: referrer ? adminPublicUser(db, referrer) : null };
   });
   res.json(enriched.sort((a,b)=> (b.createdAt||'').localeCompare(a.createdAt||'')));
 });
@@ -688,7 +699,7 @@ app.get('/api/admin/purchases', adminRequired, (_req, res) => {
   const list = db.purchases.map(p => {
     const u = db.users.find(x=>x.id===p.userId);
     const referrer = u?.referredBy ? db.users.find(x=>x.id===u.referredBy) : null;
-    return { ...p, machine: ms.find(m => m.id === p.machineId) || null, user: publicUser(u || {id:p.userId}), referrer: referrer ? { id: referrer.id, username: referrer.username, phone: referrer.phone, memberId: referrer.memberId } : null };
+    return { ...p, machine: ms.find(m => m.id === p.machineId) || null, user: u ? adminPublicUser(db, u) : { id: p.userId }, referrer: referrer ? adminPublicUser(db, referrer) : null };
   });
   res.json(list.sort((a,b)=> (b.createdAt||'').localeCompare(a.createdAt||'')));
 });
@@ -711,38 +722,54 @@ app.patch('/api/admin/transactions/:id', adminRequired, (req, res) => {
   tx.status = status;
   logAdmin(db, req, 'transaction.update', { id: tx.id, type: tx.type, status });
   writeDb(db);
-  res.json({ ...tx, user: publicUser(db.users.find(u=>u.id===tx.userId) || {id:tx.userId}) });
+  const txUser = db.users.find(u=>u.id===tx.userId);
+  res.json({ ...tx, user: txUser ? adminPublicUser(db, txUser) : { id: tx.userId } });
 });
 
 app.get('/api/admin/transactions/:id', adminRequired, (req, res) => {
   const db = readDb();
   const tx = db.transactions.find(t => t.id === req.params.id);
   if (!tx) return res.status(404).json({ error: 'Transaction introuvable' });
-  res.json({ ...tx, user: publicUser(db.users.find(u=>u.id===tx.userId) || {id:tx.userId}) });
+  const txUser = db.users.find(u=>u.id===tx.userId);
+  res.json({ ...tx, user: txUser ? adminPublicUser(db, txUser) : { id: tx.userId } });
 });
 
 app.get('/api/admin/users/:id', adminRequired, (req, res) => {
   const db = readDb();
   const u = db.users.find(x => x.id === req.params.id);
   if (!u) return res.status(404).json({ error: 'Utilisateur introuvable' });
-  const direct = db.users.filter(x => x.referredBy === u.id).map(publicUser);
-  const referrer = u.referredBy ? publicUser(db.users.find(x => x.id === u.referredBy) || { id: u.referredBy }) : null;
+  const direct = db.users.filter(x => x.referredBy === u.id).map(x => adminPublicUser(db, x));
+  const refUser = u.referredBy ? db.users.find(x => x.id === u.referredBy) : null;
+  const referrer = refUser ? adminPublicUser(db, refUser) : (u.referredBy ? { id: u.referredBy } : null);
   const txs = db.transactions.filter(t => t.userId === u.id).sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const purchases = db.purchases.filter(p => p.userId === u.id);
-  res.json({ ...publicUser(u), referrer, directReferrals: direct, referral: calcReferral(db, u.id), transactions: txs, purchases });
+  res.json({ ...adminPublicUser(db, u), referrer, directReferrals: direct, referral: calcReferral(db, u.id), transactions: txs, purchases });
 });
 
 app.patch('/api/admin/users/:id', adminRequired, (req, res) => {
   const db = readDb();
   const u = db.users.find(x => x.id === req.params.id);
   if (!u) return res.status(404).json({ error: 'Utilisateur introuvable' });
-  const { username, balance, bonus } = req.body || {};
-  if (username !== undefined) u.username = String(username).trim().slice(0, 30);
-  if (balance !== undefined) u.balance = Number(balance) || 0;
-  if (bonus !== undefined) u.bonus = Number(bonus) || 0;
-  logAdmin(db, req, 'user.update', { id: u.id, fields: Object.keys(req.body||{}) });
+  const { username, balance } = req.body || {};
+  const changed = [];
+  if (username !== undefined) { u.username = String(username).trim().slice(0, 30); changed.push('username'); }
+  if (balance !== undefined) {
+    const target = Number(balance);
+    if (!Number.isFinite(target) || target < 0) return res.status(400).json({ error: 'Solde invalide' });
+    const current = Number(u.balance || 0);
+    const delta = Math.round((target - current) * 100) / 100;
+    if (delta !== 0) {
+      u.balance = target;
+      db.transactions = db.transactions || [];
+      db.transactions.push({ id: uid('tx'), userId: u.id, type: 'adjustment', amount: delta, status: 'confirmed', label: 'Ajustement admin (solde)', createdAt: new Date().toISOString() });
+      changed.push('balance');
+    }
+  }
+  // bonus total is derived from confirmed bonus/commission transactions; keep it consistent
+  u.bonus = computeBonusTotal(db, u.id);
+  logAdmin(db, req, 'user.update', { id: u.id, fields: changed });
   writeDb(db);
-  res.json(publicUser(u));
+  res.json(adminPublicUser(db, u));
 });
 
 app.get('/api/admin/machines', adminRequired, (_req, res) => {

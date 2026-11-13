@@ -36,7 +36,7 @@ export function HomePage() {
       else setInviteBonus({ directCount: d?.levels?.[0]?.count || 0, awarded: 0, target: 0, tiers: defaultInviteTiers.map(t=>({count:t.count,total:t.total})) });
     }).catch(() => {});
     api<any[]>('/notifications').then((list) => {
-      const unread = (Array.isArray(list)?list:[]).filter(n => !n.read && (n.title === 'Commission reçue' || n.type === 'wallet' || n.type === 'bonus'));
+      const unread = (Array.isArray(list)?list:[]).filter(n => !n.read && (n.title === 'Commission reçue' || n.title === 'Bienvenue sur FITZONE' || n.type === 'wallet' || n.type === 'bonus' || n.type === 'info'));
       if (unread.length) {
         const n = unread[0];
         setNotifPopup({ title: n.title || 'Notification', message: unread.length > 1 ? `${n.text} (+${unread.length-1} autre(s) notification(s))` : n.text });
