@@ -8,6 +8,7 @@ import nodemailer from 'nodemailer';
 import { pathToFileURL } from 'url';
 import { initDb, readDb, writeDb, uid, usingPostgres } from './db/store.js';
 import { getPool } from './db/pg.js';
+import * as pgDb from './db/relational.js';
 import { authRequired } from './middleware/auth.js';
 import { machines as seedMachines } from './modules/machines.js';
 
@@ -282,15 +283,25 @@ function awardInviteMilestones(db, referrerId) {
 app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
 
 // Machines
-app.get('/api/machines', (_req, res) => {
-  const db = readDb();
-  res.json(getMachines(db));
+app.get('/api/machines', async (_req, res) => {
+  try {
+    if (usingPostgres()) return res.json(await pgDb.getMachines());
+    const db = readDb();
+    res.json(getMachines(db));
+  } catch (e) { console.error('machines list error', e); res.status(500).json({ error: 'Erreur serveur' }); }
 });
-app.get('/api/machines/:id', (req, res) => {
-  const db = readDb();
-  const m = getMachines(db).find(x => x.id === req.params.id);
-  if (!m) return res.status(404).json({ error: 'Machine introuvable' });
-  res.json(m);
+app.get('/api/machines/:id', async (req, res) => {
+  try {
+    if (usingPostgres()) {
+      const m = await pgDb.getMachineById(req.params.id);
+      if (!m) return res.status(404).json({ error: 'Machine introuvable' });
+      return res.json(m);
+    }
+    const db = readDb();
+    const m = getMachines(db).find(x => x.id === req.params.id);
+    if (!m) return res.status(404).json({ error: 'Machine introuvable' });
+    res.json(m);
+  } catch (e) { console.error('machine detail error', e); res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
 // Auth
@@ -532,11 +543,22 @@ app.patch('/api/profile', authRequired, async (req, res) => {
 });
 
 // Wallet
-app.get('/api/wallet', authRequired, (req, res) => {
-  const db = readDb();
-  const user = db.users.find(u => u.id === req.user.id);
-  const tx = db.transactions.filter(t => t.userId === req.user.id).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
-  res.json({ balance: user?.balance ?? 0, bonus: computeBonusTotal(db, req.user.id), transactions: tx });
+app.get('/api/wallet', authRequired, async (req, res) => {
+  try {
+    if (usingPostgres()) {
+      const user = await pgDb.getUserById(req.user.id);
+      if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+      const transactions = await pgDb.getTransactionsByUser(req.user.id);
+      const bonus = Math.round(transactions
+        .filter(t => t.status === 'confirmed' && (t.type === 'bonus' || t.type === 'commission'))
+        .reduce((s, t) => s + Number(t.amount || 0), 0));
+      return res.json({ balance: Number(user.balance || 0), bonus, transactions });
+    }
+    const db = readDb();
+    const user = db.users.find(u => u.id === req.user.id);
+    const tx = db.transactions.filter(t => t.userId === req.user.id).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+    res.json({ balance: user?.balance ?? 0, bonus: computeBonusTotal(db, req.user.id), transactions: tx });
+  } catch (e) { console.error('wallet error', e); res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
 app.post('/api/wallet/deposit', authRequired, async (req, res) => {
@@ -725,20 +747,59 @@ function enrichPurchase(p, db) {
 }
 
 // Purchases / mes produits
-app.get('/api/purchases', authRequired, (req, res) => {
-  const db = readDb();
-  const list = db.purchases
-    .filter(p => p.userId === req.user.id)
-    .map(p => enrichPurchase(p, db))
-    .sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
-  res.json(list);
+function enrichPurchaseFromMachines(p, ms) {
+  const m = (ms || []).find(x => x.id === p.machineId);
+  const daysElapsed = Math.min(Number(p.durationDays || 0), Math.max(0, Math.floor((Date.now() - new Date(p.createdAt).getTime()) / 86400000)));
+  const daysLeft = Math.max(0, Number(p.durationDays || 0) - daysElapsed);
+  const earned = Math.min(Number(p.totalRevenue || 0), daysElapsed * Number(p.dailyRevenue || 0));
+  const remaining = Math.max(0, Number(p.totalRevenue || 0) - earned);
+  const collectedDays = Math.min(daysElapsed, Number(p.collectedDays || 0));
+  const collectableDays = Math.max(0, daysElapsed - collectedDays);
+  const collectableAmount = collectableDays * Number(p.dailyRevenue || 0);
+  const collectedAmount = collectedDays * Number(p.dailyRevenue || 0);
+  return {
+    ...p,
+    collectedDays,
+    collectableDays,
+    collectableAmount,
+    collectedAmount,
+    machine: m || null,
+    daysElapsed,
+    daysLeft,
+    earned,
+    remaining,
+    progress: p.durationDays ? Math.round((daysElapsed / Number(p.durationDays)) * 100) : 0,
+  };
+}
+
+app.get('/api/purchases', authRequired, async (req, res) => {
+  try {
+    if (usingPostgres()) {
+      const [list, ms] = await Promise.all([pgDb.getPurchasesByUser(req.user.id), pgDb.getMachines()]);
+      return res.json(list.map(p => enrichPurchaseFromMachines(p, ms)).sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||'')));
+    }
+    const db = readDb();
+    const list = db.purchases
+      .filter(p => p.userId === req.user.id)
+      .map(p => enrichPurchase(p, db))
+      .sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+    res.json(list);
+  } catch (e) { console.error('purchases list error', e); res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
-app.get('/api/purchases/:id', authRequired, (req, res) => {
-  const db = readDb();
-  const p = db.purchases.find(x => x.id === req.params.id && x.userId === req.user.id);
-  if (!p) return res.status(404).json({ error: 'Achat introuvable' });
-  res.json(enrichPurchase(p, db));
+app.get('/api/purchases/:id', authRequired, async (req, res) => {
+  try {
+    if (usingPostgres()) {
+      const p = await pgDb.getPurchaseById(req.params.id);
+      if (!p || p.userId !== req.user.id) return res.status(404).json({ error: 'Achat introuvable' });
+      const ms = await pgDb.getMachines();
+      return res.json(enrichPurchaseFromMachines(p, ms));
+    }
+    const db = readDb();
+    const p = db.purchases.find(x => x.id === req.params.id && x.userId === req.user.id);
+    if (!p) return res.status(404).json({ error: 'Achat introuvable' });
+    res.json(enrichPurchase(p, db));
+  } catch (e) { console.error('purchase detail error', e); res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
 app.post('/api/purchases', authRequired, async (req, res) => {
@@ -847,16 +908,18 @@ app.post('/api/purchases', authRequired, async (req, res) => {
 });
 
 // Notifications
-app.get('/api/notifications', authRequired, (req, res) => {
-  const db = readDb();
-  const list = db.notifications.filter(n => n.userId === req.user.id).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
-  res.json(list);
+app.get('/api/notifications', authRequired, async (req, res) => {
+  try {
+    if (usingPostgres()) return res.json(await pgDb.getNotificationsByUser(req.user.id));
+    const db = readDb();
+    const list = db.notifications.filter(n => n.userId === req.user.id).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+    res.json(list);
+  } catch (e) { console.error('notifications list error', e); res.status(500).json({ error: 'Erreur serveur' }); }
 });
 app.post('/api/notifications/read-all', authRequired, async (req, res) => {
   try {
     if (usingPostgres()) {
-      const pool = getPool();
-      await pool.query('UPDATE notifications SET read=true WHERE user_id=$1', [req.user.id]);
+      await pgDb.markAllNotificationsRead(req.user.id);
       try { await initDb(); } catch {}
       return res.json({ ok: true });
     }
@@ -872,9 +935,8 @@ app.post('/api/notifications/read-all', authRequired, async (req, res) => {
 app.post('/api/notifications/:id/read', authRequired, async (req, res) => {
   try {
     if (usingPostgres()) {
-      const pool = getPool();
-      const r = await pool.query('UPDATE notifications SET read=true WHERE id=$1 AND user_id=$2', [req.params.id, req.user.id]);
-      if (r.rowCount === 0) return res.status(404).json({ error: 'Notification introuvable' });
+      const ok = await pgDb.markNotificationRead(req.user.id, req.params.id);
+      if (!ok) return res.status(404).json({ error: 'Notification introuvable' });
       try { await initDb(); } catch {}
       return res.json({ ok: true });
     }
@@ -891,9 +953,38 @@ app.post('/api/notifications/:id/read', authRequired, async (req, res) => {
 });
 
 // Referral
-app.get('/api/referral', authRequired, (req, res) => {
-  const db = readDb();
-  res.json(calcReferral(db, req.user.id));
+app.get('/api/referral', authRequired, async (req, res) => {
+  try {
+    if (usingPostgres()) {
+      const data = await pgDb.getReferralData(req.user.id);
+      if (!data) return res.status(404).json({ error: 'Utilisateur introuvable' });
+      const { user, levelsUsers, commissions, totalEarned } = data;
+      const [direct, level2, level3] = levelsUsers;
+      const ratesPct = [27, 3, 1];
+      const tiers = [{ count: 3, total: 700 }, { count: 5, total: 1200 }, { count: 10, total: 3000 }, { count: 15, total: 5000 }];
+      let inviteBonusTarget = 0;
+      for (const t of tiers) if ((direct?.length || 0) >= t.count) inviteBonusTarget = t.total;
+      const memberInfo = (u) => ({ id: u.id, memberId: u.memberId || '', username: u.username || 'Utilisateur', phone: u.phone || '', createdAt: u.createdAt || '', vipLevel: Number(u.vipLevel || 0) });
+      return res.json({
+        code: user.inviteCode,
+        link: `${APP_BASE_URL}/invite/${user.inviteCode || ''}`,
+        totalEarned,
+        inviteBonus: { directCount: direct.length, awarded: Number(user.inviteBonusAwarded || 0), target: inviteBonusTarget, tiers },
+        levels: [
+          { level: 1, count: direct.length, commission: Math.round(commissions[0] || 0), rate: ratesPct[0], members: direct.map(memberInfo) },
+          { level: 2, count: level2.length, commission: Math.round(commissions[1] || 0), rate: ratesPct[1], members: level2.map(memberInfo) },
+          { level: 3, count: level3.length, commission: Math.round(commissions[2] || 0), rate: ratesPct[2], members: level3.map(memberInfo) },
+        ],
+        teams: [
+          { name: 'Équipe A', count: direct.length },
+          { name: 'Équipe B', count: level2.length },
+          { name: 'Équipe C', count: level3.length },
+        ],
+      });
+    }
+    const db = readDb();
+    res.json(calcReferral(db, req.user.id));
+  } catch (e) { console.error('referral error', e); res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
 // Admin
@@ -974,50 +1065,108 @@ function aggregateBy(txs, keyFn) {
   return Object.values(map).sort((a,b)=>a.period.localeCompare(b.period));
 }
 
-app.get('/api/admin/stats', adminRequired, (req, res) => {
-  const db = readDb();
-  const period = req.query.period === 'week' ? 'week' : 'day';
-  const deposits = db.transactions.filter(t => t.type === 'deposit' && t.status !== 'rejected');
-  const withdrawals = db.transactions.filter(t => t.type === 'withdraw' && t.status !== 'rejected');
-  const keyFn = period === 'week' ? weekKey : dayKey;
-  const now = Date.now();
-  const online = db.users.filter(u => u.lastActiveAt && (now - new Date(u.lastActiveAt).getTime()) < 10 * 60 * 1000).length;
-  res.json({
-    users: db.users.length,
-    usersOnline: online,
-    purchases: db.purchases.length,
-    transactions: db.transactions.length,
-    depositsTotal: deposits.reduce((s, t) => s + (t.amount || 0), 0),
-    withdrawalsTotal: withdrawals.reduce((s, t) => s + (t.amount || 0), 0),
-    withdrawalsPending: db.transactions.filter(t => t.type === 'withdraw' && t.status === 'pending').length,
-    depositsPending: db.transactions.filter(t => t.type === 'deposit' && t.status === 'pending').length,
-    period,
-    depositsByPeriod: aggregateBy(deposits, keyFn),
-    withdrawalsByPeriod: aggregateBy(withdrawals, keyFn),
-  });
+app.get('/api/admin/stats', adminRequired, async (req, res) => {
+  try {
+    const period = req.query.period === 'week' ? 'week' : 'day';
+    if (usingPostgres()) {
+      const pool = getPool();
+      const [uCount, onlineCount, pCount, tCount, depTot, wdTot, wdPend, depPend, depRows, wdRows] = await Promise.all([
+        pool.query('SELECT COUNT(*)::int AS c FROM users'),
+        pool.query("SELECT COUNT(*)::int AS c FROM users WHERE last_active_at > NOW() - INTERVAL '10 minutes'"),
+        pool.query('SELECT COUNT(*)::int AS c FROM purchases'),
+        pool.query('SELECT COUNT(*)::int AS c FROM transactions'),
+        pool.query("SELECT COALESCE(SUM(amount),0) AS s FROM transactions WHERE type='deposit' AND status <> 'rejected'"),
+        pool.query("SELECT COALESCE(SUM(amount),0) AS s FROM transactions WHERE type='withdraw' AND status <> 'rejected'"),
+        pool.query("SELECT COUNT(*)::int AS c FROM transactions WHERE type='withdraw' AND status='pending'"),
+        pool.query("SELECT COUNT(*)::int AS c FROM transactions WHERE type='deposit' AND status='pending'"),
+        pool.query("SELECT amount, created_at FROM transactions WHERE type='deposit' AND status <> 'rejected'"),
+        pool.query("SELECT amount, created_at FROM transactions WHERE type='withdraw' AND status <> 'rejected'"),
+      ]);
+      const toIso = (v) => (v instanceof Date ? v.toISOString() : new Date(v).toISOString());
+      const depTxs = depRows.rows.map(r => ({ amount: Number(r.amount||0), createdAt: toIso(r.created_at) }));
+      const wdTxs = wdRows.rows.map(r => ({ amount: Number(r.amount||0), createdAt: toIso(r.created_at) }));
+      const keyFn = period === 'week' ? weekKey : dayKey;
+      return res.json({
+        users: Number(uCount.rows[0]?.c || 0),
+        usersOnline: Number(onlineCount.rows[0]?.c || 0),
+        purchases: Number(pCount.rows[0]?.c || 0),
+        transactions: Number(tCount.rows[0]?.c || 0),
+        depositsTotal: Number(depTot.rows[0]?.s || 0),
+        withdrawalsTotal: Number(wdTot.rows[0]?.s || 0),
+        withdrawalsPending: Number(wdPend.rows[0]?.c || 0),
+        depositsPending: Number(depPend.rows[0]?.c || 0),
+        period,
+        depositsByPeriod: aggregateBy(depTxs, keyFn),
+        withdrawalsByPeriod: aggregateBy(wdTxs, keyFn),
+      });
+    }
+
+    const db = readDb();
+    const deposits = db.transactions.filter(t => t.type === 'deposit' && t.status !== 'rejected');
+    const withdrawals = db.transactions.filter(t => t.type === 'withdraw' && t.status !== 'rejected');
+    const keyFn = period === 'week' ? weekKey : dayKey;
+    const now = Date.now();
+    const online = db.users.filter(u => u.lastActiveAt && (now - new Date(u.lastActiveAt).getTime()) < 10 * 60 * 1000).length;
+    res.json({
+      users: db.users.length,
+      usersOnline: online,
+      purchases: db.purchases.length,
+      transactions: db.transactions.length,
+      depositsTotal: deposits.reduce((s, t) => s + (t.amount || 0), 0),
+      withdrawalsTotal: withdrawals.reduce((s, t) => s + (t.amount || 0), 0),
+      withdrawalsPending: db.transactions.filter(t => t.type === 'withdraw' && t.status === 'pending').length,
+      depositsPending: db.transactions.filter(t => t.type === 'deposit' && t.status === 'pending').length,
+      period,
+      depositsByPeriod: aggregateBy(deposits, keyFn),
+      withdrawalsByPeriod: aggregateBy(withdrawals, keyFn),
+    });
+  } catch (e) {
+    console.error('admin stats error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
-app.get('/api/settings', (_req, res) => {
-  const db = readDb();
-  const s = getSettings(db);
-  res.json({
-    supportTelegram: s.supportTelegram,
-    depositNumber: s.depositNumber,
-    merchantCode: s.merchantCode,
-    minWithdraw: s.minWithdraw,
-    maxWithdraw: s.maxWithdraw,
-    withdrawFeePercent: s.withdrawFeePercent,
-    minDeposit: s.minDeposit,
-    maxDeposit: s.maxDeposit,
-    depositPresets: s.depositPresets,
-    withdrawPresets: s.withdrawPresets,
-    appBaseUrl: APP_BASE_URL,
-  });
+app.get('/api/settings', async (_req, res) => {
+  try {
+    let s;
+    if (usingPostgres()) {
+      const map = await pgDb.getSettings();
+      s = getSettings({ settings: map || {} });
+    } else {
+      const db = readDb();
+      s = getSettings(db);
+    }
+    res.json({
+      supportTelegram: s.supportTelegram,
+      depositNumber: s.depositNumber,
+      merchantCode: s.merchantCode,
+      minWithdraw: s.minWithdraw,
+      maxWithdraw: s.maxWithdraw,
+      withdrawFeePercent: s.withdrawFeePercent,
+      minDeposit: s.minDeposit,
+      maxDeposit: s.maxDeposit,
+      depositPresets: s.depositPresets,
+      withdrawPresets: s.withdrawPresets,
+      appBaseUrl: APP_BASE_URL,
+    });
+  } catch (e) {
+    console.error('settings error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
-app.get('/api/admin/settings', adminRequired, (_req, res) => {
-  const db = readDb();
-  res.json(getSettings(db));
+app.get('/api/admin/settings', adminRequired, async (_req, res) => {
+  try {
+    if (usingPostgres()) {
+      const map = await pgDb.getSettings();
+      return res.json(getSettings({ settings: map || {} }));
+    }
+    const db = readDb();
+    res.json(getSettings(db));
+  } catch (e) {
+    console.error('admin settings error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
 app.patch('/api/admin/settings', adminRequired, async (req, res) => {
@@ -1061,10 +1210,19 @@ app.patch('/api/admin/settings', adminRequired, async (req, res) => {
   }
 });
 
-app.get('/api/admin/audit', adminRequired, (_req, res) => {
-  const db = readDb();
-  const logs = [...(db.auditLogs || [])].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
-  res.json(logs.slice(0, 300));
+app.get('/api/admin/audit', adminRequired, async (_req, res) => {
+  try {
+    if (usingPostgres()) {
+      const logs = await pgDb.getAuditLogs(300);
+      return res.json(logs);
+    }
+    const db = readDb();
+    const logs = [...(db.auditLogs || [])].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+    res.json(logs.slice(0, 300));
+  } catch (e) {
+    console.error('admin audit error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
 app.get('/api/admin/referrals', adminRequired, (_req, res) => {
@@ -1249,9 +1407,18 @@ app.patch('/api/admin/users/:id', adminRequired, async (req, res) => {
   }
 });
 
-app.get('/api/admin/machines', adminRequired, (_req, res) => {
-  const db = readDb();
-  res.json(getMachines(db));
+app.get('/api/admin/machines', adminRequired, async (_req, res) => {
+  try {
+    if (usingPostgres()) {
+      const ms = await pgDb.getMachines();
+      return res.json(ms);
+    }
+    const db = readDb();
+    res.json(getMachines(db));
+  } catch (e) {
+    console.error('admin machines error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
 app.post('/api/admin/machines', adminRequired, async (req, res) => {
