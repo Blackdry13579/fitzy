@@ -212,7 +212,7 @@ export function HomePage() {
         </section>
       </div>
       <NoticeModal open={!!notice} title={notice?.title} message={notice?.message||''} type={notice?.type} onClose={()=>setNotice(null)} />
-      <NoticeModal open={!!notifPopup} title={notifPopup?.title} message={notifPopup?.message||''} type="success" onClose={()=>setNotifPopup(null)} />
+      <NoticeModal open={!!notifPopup} title={notifPopup?.title} message={notifPopup?.message||''} type="success" onClose={()=>{ setNotifPopup(null); api('/notifications/read-all', { method:'POST' }).catch(()=>{}); }} />
 
       <style>{`
         .screen { background: #fff; min-height: 100%; }
