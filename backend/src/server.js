@@ -437,32 +437,48 @@ app.post('/api/wallet/claim-daily', authRequired, (req, res) => {
   res.json({ balance: user.balance, bonus: user.bonus, transaction: tx });
 });
 
+
+function enrichPurchase(p, db) {
+  const ms = getMachines(db);
+  const m = ms.find(x => x.id === p.machineId);
+  const daysElapsed = Math.min(p.durationDays, Math.max(0, Math.floor((Date.now() - new Date(p.createdAt).getTime()) / 86400000)));
+  const daysLeft = Math.max(0, p.durationDays - daysElapsed);
+  const earned = Math.min(p.totalRevenue || 0, daysElapsed * Number(p.dailyRevenue || 0));
+  const remaining = Math.max(0, Number(p.totalRevenue || 0) - earned);
+  const collectedDays = Math.min(daysElapsed, Number(p.collectedDays || 0));
+  const collectableDays = Math.max(0, daysElapsed - collectedDays);
+  const collectableAmount = collectableDays * Number(p.dailyRevenue || 0);
+  const collectedAmount = collectedDays * Number(p.dailyRevenue || 0);
+  return {
+    ...p,
+    collectedDays,
+    collectableDays,
+    collectableAmount,
+    collectedAmount,
+    machine: m || null,
+    daysElapsed,
+    daysLeft,
+    earned,
+    remaining,
+    progress: p.durationDays ? Math.round((daysElapsed / p.durationDays) * 100) : 0,
+  };
+}
+
 // Purchases / mes produits
 app.get('/api/purchases', authRequired, (req, res) => {
   const db = readDb();
-  const ms = getMachines(db);
-  const list = db.purchases.filter(p => p.userId === req.user.id).map(p => {
-    const m = ms.find(x => x.id === p.machineId);
-    const daysElapsed = Math.min(p.durationDays, Math.max(0, Math.floor((Date.now() - new Date(p.createdAt).getTime()) / 86400000)));
-    const daysLeft = Math.max(0, p.durationDays - daysElapsed);
-    const earned = Math.min(p.totalRevenue, daysElapsed * p.dailyRevenue);
-    const remaining = Math.max(0, p.totalRevenue - earned);
-    return { ...p, machine: m, daysElapsed, daysLeft, earned, remaining, progress: p.durationDays ? Math.round((daysElapsed / p.durationDays) * 100) : 0 };
-  }).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  const list = db.purchases
+    .filter(p => p.userId === req.user.id)
+    .map(p => enrichPurchase(p, db))
+    .sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
   res.json(list);
 });
 
 app.get('/api/purchases/:id', authRequired, (req, res) => {
   const db = readDb();
-  const ms = getMachines(db);
   const p = db.purchases.find(x => x.id === req.params.id && x.userId === req.user.id);
   if (!p) return res.status(404).json({ error: 'Achat introuvable' });
-  const m = ms.find(x => x.id === p.machineId);
-  const daysElapsed = Math.min(p.durationDays, Math.max(0, Math.floor((Date.now() - new Date(p.createdAt).getTime()) / 86400000)));
-  const daysLeft = Math.max(0, p.durationDays - daysElapsed);
-  const earned = Math.min(p.totalRevenue, daysElapsed * p.dailyRevenue);
-  const remaining = Math.max(0, p.totalRevenue - earned);
-  res.json({ ...p, machine: m, daysElapsed, daysLeft, earned, remaining, progress: p.durationDays ? Math.round((daysElapsed / p.durationDays) * 100) : 0 });
+  res.json(enrichPurchase(p, db));
 });
 
 app.post('/api/purchases', authRequired, (req, res) => {
@@ -474,6 +490,8 @@ app.post('/api/purchases', authRequired, (req, res) => {
   if (m.locked) return res.status(400).json({ error: 'Machine verrouillée' });
   const user = db.users.find(u => u.id === req.user.id);
   if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+  const hasPendingDeposit = (db.transactions || []).some(t => t.userId === user.id && t.type === 'deposit' && t.status === 'pending');
+  if (hasPendingDeposit) return res.status(400).json({ error: 'Vous avez un dépôt en attente de confirmation. Achat impossible tant que le dépôt n’est pas confirmé par l’admin.' });
   if ((user.balance || 0) < m.priceFcfa) return res.status(400).json({ error: 'Solde insuffisant' });
   const recent = db.purchases.find(p => p.userId === user.id && p.machineId === m.id && (Date.now() - new Date(p.createdAt).getTime()) < 30000);
   if (recent) return res.status(400).json({ error: 'Achat déjà en cours/enregistré, veuillez patienter' });
@@ -487,6 +505,7 @@ app.post('/api/purchases', authRequired, (req, res) => {
     durationDays: m.durationDays,
     totalRevenue: m.dailyRevenueFcfa * m.durationDays,
     status: 'active',
+    collectedDays: 0,
     createdAt: new Date().toISOString(),
   };
   db.purchases.push(purchase);
@@ -507,6 +526,14 @@ app.get('/api/notifications', authRequired, (req, res) => {
 app.post('/api/notifications/read-all', authRequired, (req, res) => {
   const db = readDb();
   db.notifications.forEach(n => { if (n.userId === req.user.id) n.read = true; });
+  writeDb(db);
+  res.json({ ok: true });
+});
+app.post('/api/notifications/:id/read', authRequired, (req, res) => {
+  const db = readDb();
+  const n = (db.notifications || []).find(x => x.id === req.params.id && x.userId === req.user.id);
+  if (!n) return res.status(404).json({ error: 'Notification introuvable' });
+  n.read = true;
   writeDb(db);
   res.json({ ok: true });
 });
@@ -843,6 +870,43 @@ app.get('/api/admin/referrals/tree', adminRequired, (req, res) => {
   }
   const roots = db.users.filter(u => !u.referredBy).map(u => node(u));
   res.json(roots);
+});
+
+
+app.post('/api/purchases/:id/collect', authRequired, (req, res) => {
+  const db = readDb();
+  const p = db.purchases.find(x => x.id === req.params.id && x.userId === req.user.id);
+  if (!p) return res.status(404).json({ error: 'Produit introuvable' });
+  const ep = enrichPurchase(p, db);
+  if (!ep.collectableAmount || ep.collectableAmount <= 0) {
+    return res.status(400).json({ error: 'Aucun gain à récolter pour le moment' });
+  }
+  const user = db.users.find(u => u.id === req.user.id);
+  if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+  user.balance = Number(user.balance || 0) + Number(ep.collectableAmount);
+  p.collectedDays = Number(p.collectedDays || 0) + Number(ep.collectableDays);
+  const tx = {
+    id: uid('tx'),
+    userId: user.id,
+    type: 'bonus',
+    amount: ep.collectableAmount,
+    status: 'confirmed',
+    label: `Récolte gains - ${ep.machine?.name || 'Machine'}`,
+    createdAt: new Date().toISOString(),
+  };
+  db.transactions.push(tx);
+  user.bonus = computeBonusTotal(db, user.id);
+  db.notifications.push({
+    id: uid('ntf'),
+    userId: user.id,
+    title: 'Gains récoltés',
+    text: `Vous avez récolté ${Number(ep.collectableAmount).toLocaleString('fr-FR')} FCFA.`,
+    type: 'wallet',
+    read: false,
+    createdAt: new Date().toISOString(),
+  });
+  writeDb(db);
+  res.json({ balance: user.balance, bonus: user.bonus, purchase: enrichPurchase(p, db), transaction: tx });
 });
 
 export { app, calcReferral, creditReferralCommissionsForPurchase, getSettings, generateInviteCode, awardInviteMilestones, computeBonusTotal };

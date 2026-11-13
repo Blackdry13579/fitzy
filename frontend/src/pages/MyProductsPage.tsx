@@ -8,7 +8,20 @@ type P = any;
 
 export function MyProductsPage() {
   const [my, setMy] = useState<P[]>([]);
-  useEffect(() => { api<P[]>('/purchases').then(setMy).catch(()=>setMy([])); }, []);
+  const [collecting, setCollecting] = useState<string | null>(null);
+  const load = () => api<P[]>('/purchases').then(setMy).catch(()=>setMy([]));
+  useEffect(() => { load(); }, []);
+  const collect = async (id: string) => {
+    try {
+      setCollecting(id);
+      await api(`/purchases/${id}/collect`, { method: 'POST' });
+      await load();
+    } catch (e: any) {
+      alert(e?.message || 'Impossible de récolter pour le moment');
+    } finally {
+      setCollecting(null);
+    }
+  };
 
   const totalInvestment = my.reduce((s, m) => s + (m.amount || 0), 0);
   const totalDaily = my.reduce((s, m) => s + (m.dailyRevenue || 0), 0);
@@ -63,6 +76,19 @@ export function MyProductsPage() {
                       <div className="rev blue"><p>Revenus totaux</p><strong>{(p.totalRevenue||0).toLocaleString('fr-FR')} FCFA</strong></div>
                     </div>
                     <p className="status"><Clock size={14} /> {p.daysLeft === 0 ? 'Produit expiré' : `Expire dans ${p.daysLeft} jours`}</p>
+                    <div className="collect-row">
+                      <div className="collect-info">
+                        <span>À récolter</span>
+                        <strong>{Number(p.collectableAmount || 0).toLocaleString('fr-FR')} FCFA</strong>
+                      </div>
+                      <button
+                        className="collect-btn"
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); collect(p.id); }}
+                        disabled={collecting === p.id || !(p.collectableAmount > 0)}
+                      >
+                        {collecting === p.id ? '...' : 'Collecter'}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </Link>
@@ -104,6 +130,11 @@ export function MyProductsPage() {
         .rev{border-radius:10px;padding:6px 8px} .rev p{margin:0;font-size:10px} .rev strong{font-size:12px}
         .green{background:#dcfce7;color:#166534} .blue{background:#eff6ff;color:#1d4ed8}
         .status{margin:6px 0 0;font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:4px}
+        .collect-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:8px;padding:8px;border-radius:10px;background:#f0fdf4;border:1px solid #bbf7d0}
+        .collect-info span{display:block;font-size:10px;color:#166534}
+        .collect-info strong{font-size:13px;color:#166534}
+        .collect-btn{height:34px;padding:0 14px;border:none;border-radius:10px;background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;font-weight:700;font-size:13px;cursor:pointer;white-space:nowrap}
+        .collect-btn:disabled{opacity:.5;cursor:not-allowed;background:#94a3b8}
         @media (min-width: 900px){
           .content{padding:24px 32px 40px;max-width:1100px;width:100%;margin:0 auto;gap:16px}
           .grid{grid-template-columns:repeat(4,1fr)}

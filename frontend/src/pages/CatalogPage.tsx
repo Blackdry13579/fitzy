@@ -12,12 +12,25 @@ export function CatalogPage() {
   const [tab, setTab] = useState<'produits' | 'mes'>(params.get('tab') === 'mes' ? 'mes' : 'produits');
   const [machines, setMachines] = useState<Machine[]>(localMachines as Machine[]);
   const [my, setMy] = useState<any[]>([]);
+  const [collecting, setCollecting] = useState<string | null>(null);
+  const loadMy = () => api<any[]>('/purchases').then(setMy).catch(()=>setMy([]));
 
   useEffect(() => { setTab(params.get('tab') === 'mes' ? 'mes' : 'produits'); }, [params]);
   useEffect(() => {
     api<Machine[]>('/machines').then((data) => { if (Array.isArray(data) && data.length) setMachines(data); }).catch(()=>{});
-    api<any[]>('/purchases').then(setMy).catch(()=>setMy([]));
+    loadMy();
   }, []);
+  const collect = async (id: string) => {
+    try {
+      setCollecting(id);
+      await api(`/purchases/${id}/collect`, { method: 'POST' });
+      await loadMy();
+    } catch (e: any) {
+      alert(e?.message || 'Impossible de récolter pour le moment');
+    } finally {
+      setCollecting(null);
+    }
+  };
 
   const products = machines.map((m, i) => ({
     ...m,
@@ -112,6 +125,10 @@ export function CatalogPage() {
                         <div className="prog-head"><span>Progression</span><span>{p.daysElapsed}/{p.durationDays} jours</span></div>
                         <div className="bar"><div className="fill" style={{ width: `${p.progress || 0}%` }} /></div>
                         <div className="prog-foot"><span>{p.daysElapsed} jours écoulés</span><span>{p.daysLeft} jours restants</span></div>
+                        <div className="collect-row">
+                          <div className="collect-info"><span>À récolter</span><strong>{Number(p.collectableAmount || 0).toLocaleString('fr-FR')} FCFA</strong></div>
+                          <button className="collect-btn" onClick={(e)=>{e.preventDefault();e.stopPropagation();collect(p.id);}} disabled={collecting===p.id || !(p.collectableAmount>0)}>{collecting===p.id?'...':'Collecter'}</button>
+                        </div>
                       </div>
                     </div>
                   </Link>
@@ -175,6 +192,10 @@ export function CatalogPage() {
         .prog-head,.prog-foot{display:flex;justify-content:space-between;font-size:11px;color:#111827}
         .prog-head{margin-bottom:4px}
         .bar{height:6px;background:#e5e7eb;border-radius:999px;overflow:hidden;margin:4px 0} .fill{height:100%;background:linear-gradient(135deg, #60a5fa 0%, #3b82f6 45%, #2563eb 100%)}
+        .collect-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;padding:8px;border-radius:10px;background:#f0fdf4;border:1px solid #bbf7d0}
+        .collect-info span{display:block;font-size:10px;color:#166534}.collect-info strong{font-size:12px;color:#166534}
+        .collect-btn{height:32px;padding:0 12px;border:none;border-radius:10px;background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;font-weight:700;font-size:12px;cursor:pointer}
+        .collect-btn:disabled{opacity:.5;cursor:not-allowed;background:#94a3b8}
         @media (min-width: 900px){
           .content{padding:24px 32px 32px;max-width:1100px;width:100%;margin:0 auto}
           .list-col{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}
