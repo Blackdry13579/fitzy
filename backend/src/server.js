@@ -678,6 +678,9 @@ app.post('/api/wallet/withdraw', authRequired, async (req, res) => {
         if (!uRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Utilisateur introuvable' }); }
         const bal = Number(uRes.rows[0].balance || 0);
         if (bal < amt) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Solde insuffisant' }); }
+        const depOk = await client.query(`SELECT 1 FROM transactions WHERE user_id=$1 AND type='deposit' AND status='confirmed' AND amount >= 2500 LIMIT 1`, [req.user.id]);
+        const purchaseOk = await client.query(`SELECT 1 FROM purchases WHERE user_id=$1 LIMIT 1`, [req.user.id]);
+        if (!depOk.rowCount || !purchaseOk.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Retrait impossible : vous devez effectuer un premier dépôt d’au moins 2 500 FCFA (confirmé) et acheter une machine avant de pouvoir retirer.' }); }
         const recent = await client.query(`SELECT 1 FROM transactions WHERE user_id=$1 AND type='withdraw' AND status='pending' AND amount=$2 AND phone=$3 AND created_at > NOW() - INTERVAL '60 seconds' LIMIT 1`, [req.user.id, amt, phone]);
         if (recent.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Demande de retrait déjà en cours de traitement' }); }
         await client.query('UPDATE users SET balance = balance - $1, updated_at=NOW() WHERE id=$2', [amt, req.user.id]);
@@ -701,6 +704,9 @@ app.post('/api/wallet/withdraw', authRequired, async (req, res) => {
     const user = db.users.find(u => u.id === req.user.id);
     if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
     if ((user.balance || 0) < amt) return res.status(400).json({ error: 'Solde insuffisant' });
+    const hasEligibleDeposit = (db.transactions || []).some(t => t.userId === user.id && t.type === 'deposit' && t.status === 'confirmed' && Number(t.amount || 0) >= 2500);
+    const hasPurchase = (db.purchases || []).some(p => p.userId === user.id);
+    if (!hasEligibleDeposit || !hasPurchase) return res.status(400).json({ error: 'Retrait impossible : vous devez effectuer un premier dépôt d’au moins 2 500 FCFA (confirmé) et acheter une machine avant de pouvoir retirer.' });
     const recent = db.transactions.find(t => t.userId === user.id && t.type === 'withdraw' && t.status === 'pending' && Number(t.amount) === amt && t.phone === phone && (Date.now() - new Date(t.createdAt).getTime()) < 60000);
     if (recent) return res.status(400).json({ error: 'Demande de retrait déjà en cours de traitement' });
     user.balance -= amt;
