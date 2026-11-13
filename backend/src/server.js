@@ -702,7 +702,7 @@ app.patch('/api/admin/transactions/:id', adminRequired, (req, res) => {
   if (!['deposit','withdraw'].includes(tx.type)) return res.status(400).json({ error: 'Action non supportée pour ce type' });
   if (tx.type === 'withdraw' && tx.status === 'pending' && status === 'rejected') {
     const user = db.users.find(u => u.id === tx.userId);
-    if (user) user.balance = (user.balance || 0) + Number(tx.amount || 0) + Number(tx.fee || 0);
+    if (user) user.balance = (user.balance || 0) + Number(tx.amount || 0);
   }
   if (tx.type === 'deposit' && tx.status === 'pending' && status === 'confirmed') {
     const user = db.users.find(u => u.id === tx.userId);
