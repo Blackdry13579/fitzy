@@ -364,9 +364,39 @@ app.post('/api/auth/register', async (req, res) => {
         }
 
         await client.query('COMMIT');
-        try { await initDb(); } catch {}
         const db = readDb();
-        const user = db.users.find(u => u.id === userId);
+        const nowIsoMem = nowIso;
+        const bonusTxId = uid('tx');
+        const welcomeNtfId = uid('ntf');
+        const user = {
+          id: userId, memberId, username: 'Utilisateur', phone, country: country || 'BF', inviteCode: newInvite,
+          referredBy: referrer ? referrer.id : null, passwordHash: hash, balance: 600, bonus: 600,
+          onboardingDone: false, inviteBonusAwarded: 0, vipLevel: 0, createdAt: nowIsoMem,
+        };
+        db.users = db.users || []; db.users.push(user);
+        db.transactions = db.transactions || [];
+        db.transactions.unshift({ id: bonusTxId, userId, type: 'bonus', amount: 600, status: 'confirmed', label: "Bonus d'inscription", createdAt: nowIsoMem });
+        db.notifications = db.notifications || [];
+        db.notifications.unshift({ id: welcomeNtfId, userId, title: 'Bienvenue sur FITZONE', text: 'Votre compte a été créé avec succès. Bonus d’inscription de 600 FCFA ajouté à votre solde.', type: 'info', read: false, createdAt: nowIsoMem });
+        if (referrer) {
+          // milestone effects may have been applied in DB; refresh referrer-related state minimally by recomputing from DB? fallback: init-lite via counts in memory not perfect; but easier: reload just referrer state is complex. Keep simple: update in-memory referrer if milestone awarded.
+          try {
+            const tiers = [{count:3,total:700},{count:5,total:1200},{count:10,total:3000},{count:15,total:5000}];
+            const directCount = (db.users||[]).filter(u=>u.referredBy===referrer.id).length;
+            let target=0; for (const t of tiers) if (directCount>=t.count) target=t.total;
+            const refU = (db.users||[]).find(u=>u.id===referrer.id);
+            if (refU) {
+              const awarded = Number(refU.inviteBonusAwarded||0);
+              if (target>awarded) {
+                const delta = target-awarded;
+                refU.balance = Number(refU.balance||0)+delta;
+                refU.inviteBonusAwarded = target;
+                db.transactions.unshift({ id: uid('tx'), userId: refU.id, type: 'bonus', amount: delta, status: 'confirmed', label: `Bonus invitation (${directCount} invités)`, createdAt: nowIsoMem });
+                db.notifications.unshift({ id: uid('ntf'), userId: refU.id, title: 'Bonus d’invitation', text: `Félicitations ! Vous avez atteint ${directCount} invités et reçu ${delta.toLocaleString('fr-FR')} FCFA.`, type: 'wallet', read: false, createdAt: nowIsoMem });
+              }
+            }
+          } catch {}
+        }
         const token = sign({ id: userId, phone });
         return res.json({ token, user: ensureUserShape(user, db) });
       } catch (e) {
@@ -432,9 +462,9 @@ app.post('/api/auth/login', async (req, res) => {
           await client.query('UPDATE users SET member_id=$1, updated_at=NOW() WHERE id=$2', [memberId, row.id]);
         }
         await client.query('COMMIT');
-        try { await initDb(); } catch {}
         const db = readDb();
-        const user = db.users.find(u => u.id === row.id);
+        let user = db.users.find(u => u.id === row.id);
+        if (user && memberId) user.memberId = memberId;
         const token = sign({ id: row.id, phone: row.phone });
         return res.json({ token, user: ensureUserShape(user, db) });
       } catch (e) {
@@ -475,10 +505,10 @@ app.get('/api/auth/me', authRequired, async (req, res) => {
           await client.query('UPDATE users SET member_id=$1, updated_at=NOW() WHERE id=$2', [memberId, req.user.id]);
         }
         await client.query('COMMIT');
-        try { await initDb(); } catch {}
         const db = readDb();
         const user = db.users.find(u => u.id === req.user.id);
         if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+        if (memberId) user.memberId = memberId;
         return res.json(ensureUserShape(user, db));
       } catch (e) {
         try { await client.query('ROLLBACK'); } catch {}
@@ -879,11 +909,30 @@ app.post('/api/purchases', authRequired, async (req, res) => {
         }
 
         await client.query('COMMIT');
-        try { await initDb(); } catch {}
         const db = readDb();
         const user = db.users.find(u => u.id === req.user.id);
-        const purchase = (db.purchases || []).find(p => p.id === purchaseId);
-        return res.json({ balance: user?.balance ?? 0, purchase: purchase ? enrichPurchase(purchase, db) : { id: purchaseId } });
+        if (user) user.balance = Math.max(0, Number(user.balance || 0) - Number(m.priceFcfa));
+        const purchase = {
+          id: purchaseId, userId: req.user.id, machineId: m.id, amount: Number(m.priceFcfa),
+          dailyRevenue: Number(m.dailyRevenueFcfa), durationDays: Number(m.durationDays),
+          totalRevenue: Number(m.dailyRevenueFcfa) * Number(m.durationDays), status: 'active', collectedDays: 0, createdAt: nowIso,
+        };
+        db.purchases = db.purchases || []; db.purchases.unshift(purchase);
+        db.transactions = db.transactions || [];
+        db.transactions.unshift({ id: uid('tx'), userId: req.user.id, type: 'purchase', amount: -Number(m.priceFcfa), status: 'confirmed', label: `Achat ${m.name}`, createdAt: nowIso });
+        db.notifications = db.notifications || [];
+        db.notifications.unshift({ id: uid('ntf'), userId: req.user.id, title: 'Machine activée', text: `${m.name} a été activée avec succès.`, type: 'purchase', read: false, createdAt: nowIso });
+        // commissions effects applied in DB; update in-memory upline balances/tx/notifications best-effort
+        try {
+          const rates = [0.27,0.03,0.01]; let refId = buyer.referred_by || null;
+          for (let level=1; level<=3 && refId; level++) {
+            const refU = (db.users||[]).find(u=>u.id===refId); if(!refU) break;
+            const exists = (db.transactions||[]).some(t=>t.type==='commission' && t.sourcePurchaseId===purchaseId && Number(t.level)===level);
+            if(!exists){ const amount=Math.round(Number(m.priceFcfa)*rates[level-1]); if(amount>0){ refU.balance=Number(refU.balance||0)+amount; const pct=Math.round(rates[level-1]*100); db.transactions.unshift({id:uid('tx'),userId:refU.id,type:'commission',amount,status:'confirmed',level,sourcePurchaseId:purchaseId,label:`Commission parrainage N${level}`,createdAt:nowIso}); db.notifications.unshift({id:uid('ntf'),userId:refU.id,title:'Commission reçue',text:`Une personne que vous avez invitée (niveau ${level}, ${pct}%) a acheté une machine. Vous recevez ${amount.toLocaleString('fr-FR')} FCFA, ajoutés à votre solde.`,type:'wallet',read:false,createdAt:nowIso}); }}
+            refId = refU.referredBy || null;
+          }
+        } catch {}
+        return res.json({ balance: user?.balance ?? 0, purchase: enrichPurchase(purchase, db) });
       } catch (e) {
         try { await client.query('ROLLBACK'); } catch {}
         throw e;
@@ -1057,7 +1106,7 @@ app.post('/api/admin/recover/request', async (req, res) => {
     const recovery = { code, email: creds.email, expiresAt: Date.now() + 15 * 60 * 1000 };
     if (usingPostgres()) {
       await pgDb.setSettings({ adminRecovery: recovery });
-      try { await initDb(); } catch {}
+      const dbm = readDb(); dbm.settings = { ...(dbm.settings||{}), adminRecovery: recovery };
     } else {
       db.adminRecovery = recovery;
       writeDb(db);
@@ -1088,7 +1137,7 @@ app.post('/api/admin/recover/reset', async (req, res) => {
       if (email) s.adminEmail = String(email);
       const patch = { ...s, adminRecovery: null };
       await pgDb.setSettings(patch);
-      try { await initDb(); } catch {}
+      const dbm = readDb(); dbm.settings = { ...(dbm.settings||{}), ...patch }; delete dbm.adminRecovery;
       return res.json({ ok: true, message: 'Identifiants admin mis à jour. Vous pouvez vous connecter.' });
     }
 
@@ -1251,8 +1300,8 @@ app.patch('/api/admin/settings', adminRequired, async (req, res) => {
         }
         await client.query('INSERT INTO audit_logs (id,action,details,admin,created_at) VALUES ($1,$2,$3::jsonb,$4,NOW())',[uid('log'),'settings.update', JSON.stringify({ keys: Object.keys(b) }), (req.admin?.phone||'admin')]);
         await client.query('COMMIT');
-        try { await initDb(); } catch {}
-        return res.json(getSettings(readDb()));
+        const dbm = readDb(); dbm.settings = { ...(dbm.settings||{}), ...s };
+        return res.json(getSettings(dbm));
       } catch (e) { try { await client.query('ROLLBACK'); } catch {} throw e; }
       finally { client.release(); }
     }
@@ -1427,9 +1476,16 @@ app.patch('/api/admin/transactions/:id', adminRequired, async (req, res) => {
         await client.query('INSERT INTO audit_logs (id,action,details,admin,created_at) VALUES ($1,$2,$3::jsonb,$4,NOW())', [logId, 'transaction.update', JSON.stringify({ id: tx.id, type: tx.type, from: prevStatus, status }), (req.admin?.phone || 'admin')]);
 
         await client.query('COMMIT');
-        try { await initDb(); } catch {}
         const db = readDb();
-        const outTx = (db.transactions || []).find(t => t.id === tx.id) || { ...tx, status };
+        const outTxMem = (db.transactions || []).find(t => t.id === tx.id);
+        if (outTxMem) outTxMem.status = status;
+        if (tx.type === 'withdraw' && prevStatus === 'pending' && status === 'rejected') {
+          const u = (db.users||[]).find(x=>x.id===tx.user_id);
+          if (u) u.balance = Number(u.balance||0) + Number(tx.amount||0);
+        }
+        db.auditLogs = db.auditLogs || [];
+        db.auditLogs.unshift({ id: logId, action: 'transaction.update', details: { id: tx.id, type: tx.type, from: prevStatus, status }, admin: (req.admin?.phone||'admin'), createdAt: new Date().toISOString() });
+        const outTx = outTxMem || { ...tx, status };
         const txUser = db.users.find(u=>u.id===tx.user_id);
         return res.json({ ...outTx, user: txUser ? adminPublicUser(db, txUser) : { id: tx.user_id } });
       } catch (e) {
@@ -1575,9 +1631,24 @@ app.patch('/api/admin/users/:id', adminRequired, async (req, res) => {
         }
         await client.query('INSERT INTO audit_logs (id,action,details,admin,created_at) VALUES ($1,$2,$3::jsonb,$4,NOW())',[uid('log'),'user.update', JSON.stringify({ id: req.params.id, fields: changed }), (req.admin?.phone||'admin')]);
         await client.query('COMMIT');
-        try { await initDb(); } catch {}
         const db = readDb();
         const u = db.users.find(x => x.id === req.params.id);
+        if (u) {
+          if (username !== undefined) u.username = String(username).trim().slice(0, 30);
+          if (balance !== undefined) {
+            const target = Number(balance);
+            const current = Number(uRes.rows[0].balance || 0);
+            const delta = Math.round((target - current) * 100) / 100;
+            if (delta !== 0) {
+              u.balance = target;
+              db.transactions = db.transactions || [];
+              db.transactions.unshift({ id: uid('tx'), userId: u.id, type: 'adjustment', amount: delta, status: 'confirmed', label: 'Ajustement admin (solde)', createdAt: new Date().toISOString() });
+            }
+          }
+          u.bonus = computeBonusTotal(db, u.id);
+        }
+        db.auditLogs = db.auditLogs || [];
+        db.auditLogs.unshift({ id: uid('log'), action: 'user.update', details: { id: req.params.id, fields: changed }, admin: (req.admin?.phone||'admin'), createdAt: new Date().toISOString() });
         return res.json(u ? adminPublicUser(db, u) : { id: req.params.id });
       } catch (e) { try { await client.query('ROLLBACK'); } catch {} throw e; }
       finally { client.release(); }
@@ -1653,7 +1724,9 @@ app.post('/api/admin/machines', adminRequired, async (req, res) => {
           [m.id,m.name,m.category,m.level,m.priceFcfa,m.dailyRevenueFcfa,m.durationDays,m.description,m.image,m.imageCredit,m.locked,sortOrder]);
         await client.query('INSERT INTO audit_logs (id,action,details,admin,created_at) VALUES ($1,$2,$3::jsonb,$4,NOW())',[uid('log'),'machine.create', JSON.stringify({ id: m.id, name: m.name }), (req.admin?.phone||'admin')]);
         await client.query('COMMIT');
-        try { await initDb(); } catch {}
+        const db = readDb();
+        db.machines = db.machines || []; db.machines.push(m);
+        db.auditLogs = db.auditLogs || []; db.auditLogs.unshift({ id: uid('log'), action: 'machine.create', details: { id: m.id, name: m.name }, admin: (req.admin?.phone||'admin'), createdAt: new Date().toISOString() });
         return res.json(m);
       } catch (e) { try { await client.query('ROLLBACK'); } catch {} throw e; }
       finally { client.release(); }
@@ -1695,10 +1768,13 @@ app.put('/api/admin/machines/:id', adminRequired, async (req, res) => {
           [next.name,next.category,next.level,next.priceFcfa,next.dailyRevenueFcfa,next.durationDays,next.description,next.image,next.imageCredit,next.locked,req.params.id]);
         await client.query('INSERT INTO audit_logs (id,action,details,admin,created_at) VALUES ($1,$2,$3::jsonb,$4,NOW())',[uid('log'),'machine.update', JSON.stringify({ id: req.params.id }), (req.admin?.phone||'admin')]);
         await client.query('COMMIT');
-        try { await initDb(); } catch {}
         const db = readDb();
-        const m = (getMachines(db)||[]).find(x=>x.id===req.params.id);
-        return res.json(m || { id: req.params.id, ...next });
+        db.machines = getMachines(db) || [];
+        const idxm = db.machines.findIndex(x=>x.id===req.params.id);
+        const outM = { id: req.params.id, ...next, imageCredit: next.imageCredit, dailyRevenueFcfa: next.dailyRevenueFcfa, durationDays: next.durationDays, priceFcfa: next.priceFcfa };
+        if (idxm >= 0) db.machines[idxm] = { ...db.machines[idxm], ...outM }; else db.machines.push(outM);
+        db.auditLogs = db.auditLogs || []; db.auditLogs.unshift({ id: uid('log'), action: 'machine.update', details: { id: req.params.id }, admin: (req.admin?.phone||'admin'), createdAt: new Date().toISOString() });
+        return res.json(db.machines.find(x=>x.id===req.params.id) || outM);
       } catch (e) { try { await client.query('ROLLBACK'); } catch {} throw e; }
       finally { client.release(); }
     }
@@ -1732,7 +1808,9 @@ app.delete('/api/admin/machines/:id', adminRequired, async (req, res) => {
         if (r.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Machine introuvable' }); }
         await client.query('INSERT INTO audit_logs (id,action,details,admin,created_at) VALUES ($1,$2,$3::jsonb,$4,NOW())',[uid('log'),'machine.delete', JSON.stringify({ id: req.params.id }), (req.admin?.phone||'admin')]);
         await client.query('COMMIT');
-        try { await initDb(); } catch {}
+        const db = readDb();
+        db.machines = (getMachines(db)||[]).filter(x=>x.id!==req.params.id);
+        db.auditLogs = db.auditLogs || []; db.auditLogs.unshift({ id: uid('log'), action: 'machine.delete', details: { id: req.params.id }, admin: (req.admin?.phone||'admin'), createdAt: new Date().toISOString() });
         return res.json({ ok: true });
       } catch (e) { try { await client.query('ROLLBACK'); } catch {} throw e; }
       finally { client.release(); }
@@ -1825,12 +1903,19 @@ app.post('/api/purchases/:id/collect', authRequired, async (req, res) => {
           VALUES ($1,$2,$3,$4,'wallet',false,$5)`, [ntfId, req.user.id, 'Gains récoltés', `Vous avez récolté ${Number(total).toLocaleString('fr-FR')} FCFA.`, nowIso]);
         // update bonus_total approx by recomputing not necessary now; keep in sync via reload
         await client.query('COMMIT');
-        try { await initDb(); } catch {}
         const db = readDb();
         const user = db.users.find(u => u.id === req.user.id);
-        const pp = db.purchases.find(x => x.id === p.id);
-        const tx = (db.transactions || []).find(t => t.id === txId) || { id: txId, userId: req.user.id, type: 'bonus', amount: total, status: 'confirmed', label: `Récolte gains - ${mName}`, createdAt: nowIso };
-        return res.json({ balance: user?.balance ?? 0, bonus: computeBonusTotal(db, req.user.id), purchase: pp ? enrichPurchase(pp, db) : null, transaction: tx });
+        if (user) user.balance = Number(user.balance || 0) + total;
+        db.transactions = db.transactions || [];
+        const tx = { id: txId, userId: req.user.id, type: 'bonus', amount: total, status: 'confirmed', label: `Récolte gains - ${mName}`, createdAt: nowIso };
+        db.transactions.unshift(tx);
+        db.notifications = db.notifications || [];
+        db.notifications.unshift({ id: ntfId, userId: req.user.id, title: 'Gains récoltés', text: `Vous avez récolté ${Number(total).toLocaleString('fr-FR')} FCFA.`, type: 'wallet', read: false, createdAt: nowIso });
+        const pp = (db.purchases || []).find(x => x.id === p.id);
+        if (pp) pp.collectedDays = Math.min(Number(pp.durationDays||0), Number(pp.collectedDays||0) + Number(avail.rows[0]?.days || 0));
+        const bonus = computeBonusTotal(db, req.user.id);
+        if (user) user.bonus = bonus;
+        return res.json({ balance: user?.balance ?? 0, bonus, purchase: pp ? enrichPurchase(pp, db) : null, transaction: tx });
       } catch (e) {
         try { await client.query('ROLLBACK'); } catch {}
         throw e;
