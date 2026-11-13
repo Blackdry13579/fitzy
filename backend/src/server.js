@@ -576,40 +576,109 @@ app.get('/api/purchases/:id', authRequired, (req, res) => {
   res.json(enrichPurchase(p, db));
 });
 
-app.post('/api/purchases', authRequired, (req, res) => {
-  const { machineId } = req.body || {};
-  const db = readDb();
-  const ms = getMachines(db);
-  const m = ms.find(x => x.id === machineId);
-  if (!m) return res.status(404).json({ error: 'Machine introuvable' });
-  if (m.locked) return res.status(400).json({ error: 'Machine verrouillée' });
-  const user = db.users.find(u => u.id === req.user.id);
-  if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
-  const hasPendingDeposit = (db.transactions || []).some(t => t.userId === user.id && t.type === 'deposit' && t.status === 'pending');
-  if (hasPendingDeposit) return res.status(400).json({ error: 'Vous avez un dépôt en attente de confirmation. Achat impossible tant que le dépôt n’est pas confirmé par l’admin.' });
-  if ((user.balance || 0) < m.priceFcfa) return res.status(400).json({ error: 'Solde insuffisant' });
-  const recent = db.purchases.find(p => p.userId === user.id && p.machineId === m.id && (Date.now() - new Date(p.createdAt).getTime()) < 30000);
-  if (recent) return res.status(400).json({ error: 'Achat déjà en cours/enregistré, veuillez patienter' });
-  user.balance -= m.priceFcfa;
-  const purchase = {
-    id: uid('pur'),
-    userId: user.id,
-    machineId: m.id,
-    amount: m.priceFcfa,
-    dailyRevenue: m.dailyRevenueFcfa,
-    durationDays: m.durationDays,
-    totalRevenue: m.dailyRevenueFcfa * m.durationDays,
-    status: 'active',
-    collectedDays: 0,
-    createdAt: new Date().toISOString(),
-  };
-  db.purchases.push(purchase);
-  db.transactions.push({ id: uid('tx'), userId: user.id, type: 'purchase', amount: -m.priceFcfa, status: 'confirmed', label: `Achat ${m.name}`, createdAt: new Date().toISOString() });
-  db.notifications.push({ id: uid('ntf'), userId: user.id, title: 'Machine activée', text: `${m.name} a été activée avec succès.`, type: 'purchase', read: false, createdAt: new Date().toISOString() });
-  // credit referral commissions (27/3/1%) to upline balances, idempotent per purchase/level
-  creditReferralCommissionsForPurchase(db, purchase, user);
-  writeDb(db);
-  res.json({ balance: user.balance, purchase });
+app.post('/api/purchases', authRequired, async (req, res) => {
+  try {
+    const { machineId } = req.body || {};
+    const db0 = readDb();
+    const ms = getMachines(db0);
+    const m = ms.find(x => x.id === machineId);
+    if (!m) return res.status(404).json({ error: 'Machine introuvable' });
+    if (m.locked) return res.status(400).json({ error: 'Machine verrouillée' });
+
+    if (usingPostgres()) {
+      const pool = getPool();
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const uRes = await client.query('SELECT id, balance, referred_by FROM users WHERE id=$1 FOR UPDATE', [req.user.id]);
+        if (!uRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Utilisateur introuvable' }); }
+        const buyer = uRes.rows[0];
+        const pendingDep = await client.query(`SELECT 1 FROM transactions WHERE user_id=$1 AND type='deposit' AND status='pending' LIMIT 1`, [req.user.id]);
+        if (pendingDep.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Vous avez un dépôt en attente de confirmation. Achat impossible tant que le dépôt n’est pas confirmé par l’admin.' }); }
+        if (Number(buyer.balance || 0) < Number(m.priceFcfa)) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Solde insuffisant' }); }
+        const recent = await client.query(`SELECT 1 FROM purchases WHERE user_id=$1 AND machine_id=$2 AND created_at > NOW() - INTERVAL '30 seconds' LIMIT 1`, [req.user.id, m.id]);
+        if (recent.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Achat déjà en cours/enregistré, veuillez patienter' }); }
+
+        const nowIso = new Date().toISOString();
+        const purchaseId = uid('pur');
+        await client.query('UPDATE users SET balance = balance - $1, updated_at=NOW() WHERE id=$2', [Number(m.priceFcfa), req.user.id]);
+        await client.query(`INSERT INTO purchases (id,user_id,machine_id,amount,daily_revenue,duration_days,total_revenue,status,created_at)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,'active',$8)`,
+          [purchaseId, req.user.id, m.id, Number(m.priceFcfa), Number(m.dailyRevenueFcfa), Number(m.durationDays), Number(m.dailyRevenueFcfa) * Number(m.durationDays), nowIso]);
+        await client.query(`INSERT INTO transactions (id,user_id,type,amount,status,label,created_at,updated_at)
+          VALUES ($1,$2,'purchase',$3,'confirmed',$4,$5,NOW())`,
+          [uid('tx'), req.user.id, -Number(m.priceFcfa), `Achat ${m.name}`, nowIso]);
+        await client.query(`INSERT INTO notifications (id,user_id,title,text,type,read,created_at)
+          VALUES ($1,$2,$3,$4,'purchase',false,$5)`,
+          [uid('ntf'), req.user.id, 'Machine activée', `${m.name} a été activée avec succès.`, nowIso]);
+
+        // referral commissions 27/3/1%
+        const rates = [0.27, 0.03, 0.01];
+        let refId = buyer.referred_by || null;
+        for (let level = 1; level <= 3 && refId; level++) {
+          const refRes = await client.query('SELECT id, referred_by FROM users WHERE id=$1 FOR UPDATE', [refId]);
+          if (!refRes.rows.length) break;
+          const refUser = refRes.rows[0];
+          const exists = await client.query(`SELECT 1 FROM transactions WHERE type='commission' AND source_purchase_id=$1 AND level=$2 LIMIT 1`, [purchaseId, level]);
+          if (!exists.rowCount) {
+            const amount = Math.round(Number(m.priceFcfa) * rates[level - 1]);
+            if (amount > 0) {
+              await client.query('UPDATE users SET balance = balance + $1, updated_at=NOW() WHERE id=$2', [amount, refUser.id]);
+              const pct = Math.round(rates[level - 1] * 100);
+              await client.query(`INSERT INTO transactions (id,user_id,type,amount,status,level,source_purchase_id,label,created_at,updated_at)
+                VALUES ($1,$2,'commission',$3,'confirmed',$4,$5,$6,$7,NOW())`,
+                [uid('tx'), refUser.id, amount, level, purchaseId, `Commission parrainage N${level}`, nowIso]);
+              await client.query(`INSERT INTO notifications (id,user_id,title,text,type,read,created_at)
+                VALUES ($1,$2,'Commission reçue',$3,'wallet',false,$4)`,
+                [uid('ntf'), refUser.id, `Une personne que vous avez invitée (niveau ${level}, ${pct}%) a acheté une machine. Vous recevez ${amount.toLocaleString('fr-FR')} FCFA, ajoutés à votre solde.`, nowIso]);
+            }
+          }
+          refId = refUser.referred_by || null;
+        }
+
+        await client.query('COMMIT');
+        try { await initDb(); } catch {}
+        const db = readDb();
+        const user = db.users.find(u => u.id === req.user.id);
+        const purchase = (db.purchases || []).find(p => p.id === purchaseId);
+        return res.json({ balance: user?.balance ?? 0, purchase: purchase ? enrichPurchase(purchase, db) : { id: purchaseId } });
+      } catch (e) {
+        try { await client.query('ROLLBACK'); } catch {}
+        throw e;
+      } finally { client.release(); }
+    }
+
+    const db = readDb();
+    const user = db.users.find(u => u.id === req.user.id);
+    if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    const hasPendingDeposit = (db.transactions || []).some(t => t.userId === user.id && t.type === 'deposit' && t.status === 'pending');
+    if (hasPendingDeposit) return res.status(400).json({ error: 'Vous avez un dépôt en attente de confirmation. Achat impossible tant que le dépôt n’est pas confirmé par l’admin.' });
+    if ((user.balance || 0) < m.priceFcfa) return res.status(400).json({ error: 'Solde insuffisant' });
+    const recent = db.purchases.find(p => p.userId === user.id && p.machineId === m.id && (Date.now() - new Date(p.createdAt).getTime()) < 30000);
+    if (recent) return res.status(400).json({ error: 'Achat déjà en cours/enregistré, veuillez patienter' });
+    user.balance -= m.priceFcfa;
+    const purchase = {
+      id: uid('pur'),
+      userId: user.id,
+      machineId: m.id,
+      amount: m.priceFcfa,
+      dailyRevenue: m.dailyRevenueFcfa,
+      durationDays: m.durationDays,
+      totalRevenue: m.dailyRevenueFcfa * m.durationDays,
+      status: 'active',
+      collectedDays: 0,
+      createdAt: new Date().toISOString(),
+    };
+    db.purchases.push(purchase);
+    db.transactions.push({ id: uid('tx'), userId: user.id, type: 'purchase', amount: -m.priceFcfa, status: 'confirmed', label: `Achat ${m.name}`, createdAt: new Date().toISOString() });
+    db.notifications.push({ id: uid('ntf'), userId: user.id, title: 'Machine activée', text: `${m.name} a été activée avec succès.`, type: 'purchase', read: false, createdAt: new Date().toISOString() });
+    creditReferralCommissionsForPurchase(db, purchase, user);
+    writeDb(db);
+    res.json({ balance: user.balance, purchase });
+  } catch (e) {
+    console.error('purchase error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
 // Notifications
