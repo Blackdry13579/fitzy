@@ -1399,22 +1399,28 @@ app.get('/api/admin/transactions', adminRequired, async (req, res) => {
     const { type, status } = req.query || {};
     if (usingPostgres()) {
       const [list, users] = await Promise.all([pgDb.getAllTransactions({ type, status }), pgDb.getAllUsers()]);
-      const [bonusMap, vipMap] = await Promise.all([pgDb.getBonusTotalsMap(), pgDb.getVipLevelsMap()]);
-      const byId = new Map(users.map(u => [u.id, u]));
+      let bonusMap = new Map(); let vipMap = new Map();
+      try { bonusMap = await pgDb.getBonusTotalsMap(); } catch (e) { console.error('bonusMap error', e?.message||e); }
+      try { vipMap = await pgDb.getVipLevelsMap(); } catch (e) { console.error('vipMap error', e?.message||e); }
+      const byId = new Map((users||[]).map(u => [u.id, u]));
       const shape = (u) => {
         if (!u) return null;
         const { passwordHash, ...rest } = u;
         return { ...rest, bonus: bonusMap.get(u.id) ?? Math.round(Number(u.bonusTotal ?? u.bonus ?? 0)), vipLevel: vipMap.get(u.id) ?? Number(u.vipLevel || 0) };
       };
-      const enriched = list.map(t => {
-        const u = byId.get(t.userId);
-        const ref = u?.referredBy ? byId.get(u.referredBy) : null;
-        return { ...t, user: u ? shape(u) : { id: t.userId }, referrer: ref ? shape(ref) : null };
+      const enriched = (list||[]).map(t => {
+        try {
+          const u = byId.get(t?.userId);
+          const ref = u?.referredBy ? byId.get(u.referredBy) : null;
+          return { ...t, user: u ? shape(u) : { id: t?.userId }, referrer: ref ? shape(ref) : null };
+        } catch (e) {
+          return { ...t, user: { id: t?.userId }, referrer: null };
+        }
       });
-      return res.json(enriched.sort((a,b)=> (b.createdAt||'').localeCompare(a.createdAt||'')));
+      return res.json(enriched.sort((a,b)=> String(b?.createdAt||'').localeCompare(String(a?.createdAt||''))));
     }
     const db = readDb();
-    let list = [...db.transactions];
+    let list = [...(db.transactions||[])];
     if (type) list = list.filter(t => t.type === type);
     if (status) list = list.filter(t => t.status === status);
     const enriched = list.map(t => {
@@ -1422,7 +1428,7 @@ app.get('/api/admin/transactions', adminRequired, async (req, res) => {
       const referrer = u?.referredBy ? db.users.find(x=>x.id===u.referredBy) : null;
       return { ...t, user: u ? adminPublicUser(db, u) : { id: t.userId }, referrer: referrer ? adminPublicUser(db, referrer) : null };
     });
-    res.json(enriched.sort((a,b)=> (b.createdAt||'').localeCompare(a.createdAt||'')));
+    res.json(enriched.sort((a,b)=> String(b?.createdAt||'').localeCompare(String(a?.createdAt||''))));
   } catch (e) { console.error('admin transactions error', e); res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
