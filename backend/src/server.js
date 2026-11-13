@@ -900,22 +900,57 @@ app.get('/api/admin/purchases', adminRequired, (_req, res) => {
   res.json(list.sort((a,b)=> (b.createdAt||'').localeCompare(a.createdAt||'')));
 });
 
-app.patch('/api/admin/transactions/:id', adminRequired, (req, res) => {
-  const { status } = req.body || {};
-  if (!['pending','confirmed','rejected'].includes(status)) return res.status(400).json({ error: 'Statut invalide' });
-  const db = readDb();
-  const tx = db.transactions.find(t => t.id === req.params.id);
-  if (!tx) return res.status(404).json({ error: 'Transaction introuvable' });
-  if (!['deposit','withdraw'].includes(tx.type)) return res.status(400).json({ error: 'Action non supportée pour ce type' });
-  // pas de remboursement en cas de rejet de retrait
-  if (tx.type === 'deposit' && tx.status === 'pending' && status === 'confirmed') {
-    // solde déjà crédité à la soumission du dépôt; la confirmation admin valide le dépôt (débloque les achats)
+app.patch('/api/admin/transactions/:id', adminRequired, async (req, res) => {
+  try {
+    const { status } = req.body || {};
+    if (!['pending','confirmed','rejected'].includes(status)) return res.status(400).json({ error: 'Statut invalide' });
+
+    if (usingPostgres()) {
+      const pool = getPool();
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const tRes = await client.query('SELECT * FROM transactions WHERE id=$1 FOR UPDATE', [req.params.id]);
+        if (!tRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Transaction introuvable' }); }
+        const tx = tRes.rows[0];
+        if (!['deposit','withdraw'].includes(tx.type)) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Action non supportée pour ce type' }); }
+        // Règles: dépôt crédité au solde dès la soumission (pending) -> confirmation débloque l'achat, pas de recrédit.
+        // Retrait débité à la demande -> rejet sans remboursement.
+        await client.query('UPDATE transactions SET status=$1, updated_at=NOW() WHERE id=$2', [status, tx.id]);
+
+        // audit log
+        const logId = uid('log');
+        await client.query('INSERT INTO audit_logs (id,action,details,admin,created_at) VALUES ($1,$2,$3::jsonb,$4,NOW())', [logId, 'transaction.update', JSON.stringify({ id: tx.id, type: tx.type, status }), (req.admin?.phone || 'admin')]);
+
+        await client.query('COMMIT');
+        try { await initDb(); } catch {}
+        const db = readDb();
+        const outTx = (db.transactions || []).find(t => t.id === tx.id) || { ...tx, status };
+        const txUser = db.users.find(u=>u.id===tx.user_id);
+        return res.json({ ...outTx, user: txUser ? adminPublicUser(db, txUser) : { id: tx.user_id } });
+      } catch (e) {
+        try { await client.query('ROLLBACK'); } catch {}
+        throw e;
+      } finally { client.release(); }
+    }
+
+    const db = readDb();
+    const tx = db.transactions.find(t => t.id === req.params.id);
+    if (!tx) return res.status(404).json({ error: 'Transaction introuvable' });
+    if (!['deposit','withdraw'].includes(tx.type)) return res.status(400).json({ error: 'Action non supportée pour ce type' });
+    // pas de remboursement en cas de rejet de retrait
+    if (tx.type === 'deposit' && tx.status === 'pending' && status === 'confirmed') {
+      // solde déjà crédité à la soumission du dépôt; la confirmation admin valide le dépôt (débloque les achats)
+    }
+    tx.status = status;
+    logAdmin(db, req, 'transaction.update', { id: tx.id, type: tx.type, status });
+    writeDb(db);
+    const txUser = db.users.find(u=>u.id===tx.userId);
+    res.json({ ...tx, user: txUser ? adminPublicUser(db, txUser) : { id: tx.userId } });
+  } catch (e) {
+    console.error('admin tx update error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
   }
-  tx.status = status;
-  logAdmin(db, req, 'transaction.update', { id: tx.id, type: tx.type, status });
-  writeDb(db);
-  const txUser = db.users.find(u=>u.id===tx.userId);
-  res.json({ ...tx, user: txUser ? adminPublicUser(db, txUser) : { id: tx.userId } });
 });
 
 app.get('/api/admin/transactions/:id', adminRequired, (req, res) => {
