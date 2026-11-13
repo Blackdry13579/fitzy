@@ -1,0 +1,141 @@
+export type Machine = {
+  id: string;
+  name: string;
+  category: string;
+  level: 'Entrée de gamme' | 'Intermédiaire' | 'Avancé' | 'Professionnel';
+  priceFcfa: number;
+  dailyRevenueFcfa: number;
+  durationDays: number;
+  description: string;
+  image: string;
+  imageCredit: string;
+  locked?: boolean;
+};
+
+// 6 machines VIP débloquées (images locales) + 4 machines verrouillées haute performance
+export const machines: Machine[] = [
+  {
+    id: 'm1',
+    name: 'Stepper Cardio Pro',
+    category: 'Accès au salon ouvert - Crédits quotidiens',
+    level: 'Entrée de gamme',
+    priceFcfa: 2500,
+    dailyRevenueFcfa: 520,
+    durationDays: 90,
+    description: 'Machine cardio compacte pour démarrer et générer des crédits quotidiens.',
+    image: '/1.jpeg',
+    imageCredit: 'Local',
+  },
+  {
+    id: 'm2',
+    name: 'Kit Haltères Performance',
+    category: 'Poste partagé - Crédits quotidiens',
+    level: 'Entrée de gamme',
+    priceFcfa: 7000,
+    dailyRevenueFcfa: 1610,
+    durationDays: 90,
+    description: 'Ensemble de renforcement pour un entraînement régulier à domicile.',
+    image: '/2.jpeg',
+    imageCredit: 'Local',
+  },
+  {
+    id: 'm3',
+    name: 'Vélo d’Appartement Elite',
+    category: 'Zone cardio - Crédits quotidiens',
+    level: 'Intermédiaire',
+    priceFcfa: 13000,
+    dailyRevenueFcfa: 3075,
+    durationDays: 90,
+    description: 'Vélo d’intérieur performant pour séances cardio intensives.',
+    image: '/3.jpeg',
+    imageCredit: 'Local',
+  },
+  {
+    id: 'm4',
+    name: 'Banc de Musculation Pro',
+    category: 'Zone musculation - Crédits quotidiens',
+    level: 'Intermédiaire',
+    priceFcfa: 28000,
+    dailyRevenueFcfa: 6180,
+    durationDays: 90,
+    description: 'Banc robuste pour exercices de force et développement musculaire.',
+    image: '/4.jpeg',
+    imageCredit: 'Local',
+  },
+  {
+    id: 'm5',
+    name: 'Elliptique Haute Performance',
+    category: 'Cardio premium - Crédits quotidiens',
+    level: 'Avancé',
+    priceFcfa: 60000,
+    dailyRevenueFcfa: 14022,
+    durationDays: 90,
+    description: 'Elliptique fluide pour un entraînement complet à faible impact.',
+    image: '/5.jpeg',
+    imageCredit: 'Local',
+  },
+  {
+    id: 'm6',
+    name: 'Station Home Gym',
+    category: 'Accès premium - Crédits quotidiens',
+    level: 'Avancé',
+    priceFcfa: 135000,
+    dailyRevenueFcfa: 29400,
+    durationDays: 90,
+    description: 'Station multifonction pour un entraînement complet du corps.',
+    image: '/6.jpeg',
+    imageCredit: 'Local',
+  },
+  {
+    id: 'm7',
+    name: 'Tapis de Course Professionnel',
+    category: 'Performance élite - Verrouillé',
+    level: 'Professionnel',
+    priceFcfa: 300000,
+    dailyRevenueFcfa: 65400,
+    durationDays: 90,
+    description: 'Tapis de course haute performance pour entraînements intensifs.',
+    image: 'https://images.pexels.com/photos/4162449/pexels-photo-4162449.jpeg?auto=compress&cs=tinysrgb&w=1200',
+    imageCredit: 'Pexels',
+    locked: true,
+  },
+  {
+    id: 'm8',
+    name: 'Rameur Performance Elite',
+    category: 'Performance élite - Verrouillé',
+    level: 'Professionnel',
+    priceFcfa: 650000,
+    dailyRevenueFcfa: 141700,
+    durationDays: 90,
+    description: 'Rameur professionnel pour puissance, endurance et cardio complet.',
+    image: 'https://images.pexels.com/photos/8611937/pexels-photo-8611937.jpeg?auto=compress&cs=tinysrgb&w=1200',
+    imageCredit: 'Pexels',
+    locked: true,
+  },
+  {
+    id: 'm9',
+    name: 'Station Musculation Intégrale',
+    category: 'Performance élite - Verrouillé',
+    level: 'Professionnel',
+    priceFcfa: 1400000,
+    dailyRevenueFcfa: 305200,
+    durationDays: 90,
+    description: 'Station intégrale haut de gamme pour musculation complète.',
+    image: 'https://images.pexels.com/photos/4162451/pexels-photo-4162451.jpeg?auto=compress&cs=tinysrgb&w=1200',
+    imageCredit: 'Pexels',
+    locked: true,
+  },
+  {
+    id: 'm10',
+    name: 'Presse à Jambes Professionnelle',
+    category: 'Performance élite - Verrouillé',
+    level: 'Professionnel',
+    priceFcfa: 3000000,
+    dailyRevenueFcfa: 654000,
+    durationDays: 90,
+    description: 'Machine de force professionnelle pour performances maximales.',
+    image: 'https://images.pexels.com/photos/4164761/pexels-photo-4164761.jpeg?auto=compress&cs=tinysrgb&w=1200',
+    imageCredit: 'Pexels',
+    locked: true,
+  },
+];
