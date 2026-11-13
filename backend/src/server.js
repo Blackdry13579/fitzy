@@ -401,17 +401,51 @@ app.post('/api/auth/register', async (req, res) => {
 });
 
 app.post('/api/auth/login', async (req, res) => {
-  const { phone, password } = req.body || {};
-  const db = readDb();
-  const user = db.users.find(u => u.phone === phone);
-  if (!user) return res.status(401).json({ error: 'Identifiants invalides' });
-  const ok = await bcrypt.compare(password, user.passwordHash || '');
-  if (!ok) return res.status(401).json({ error: 'Identifiants invalides' });
-  const token = sign(user);
-  let changed = false;
-  if (!user.memberId) { user.memberId = generateMemberId(db); changed = true; }
-  if (changed) writeDb(db);
-  res.json({ token, user: ensureUserShape(user, db) });
+  try {
+    const { phone, password } = req.body || {};
+
+    if (usingPostgres()) {
+      const pool = getPool();
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const uRes = await client.query('SELECT * FROM users WHERE phone=$1 LIMIT 1', [phone]);
+        if (!uRes.rows.length) { await client.query('ROLLBACK'); return res.status(401).json({ error: 'Identifiants invalides' }); }
+        const row = uRes.rows[0];
+        const ok = await bcrypt.compare(password, row.password_hash || '');
+        if (!ok) { await client.query('ROLLBACK'); return res.status(401).json({ error: 'Identifiants invalides' }); }
+        let memberId = row.member_id || null;
+        if (!memberId) {
+          for (let i=0;i<20;i++){ const cand = String(Math.floor(10000+Math.random()*90000)); const c=await client.query('SELECT 1 FROM users WHERE member_id=$1 LIMIT 1',[cand]); if(!c.rowCount){ memberId=cand; break; } }
+          if(!memberId) memberId = String(Date.now()).slice(-5);
+          await client.query('UPDATE users SET member_id=$1, updated_at=NOW() WHERE id=$2', [memberId, row.id]);
+        }
+        await client.query('COMMIT');
+        try { await initDb(); } catch {}
+        const db = readDb();
+        const user = db.users.find(u => u.id === row.id);
+        const token = sign({ id: row.id, phone: row.phone });
+        return res.json({ token, user: ensureUserShape(user, db) });
+      } catch (e) {
+        try { await client.query('ROLLBACK'); } catch {}
+        throw e;
+      } finally { client.release(); }
+    }
+
+    const db = readDb();
+    const user = db.users.find(u => u.phone === phone);
+    if (!user) return res.status(401).json({ error: 'Identifiants invalides' });
+    const ok = await bcrypt.compare(password, user.passwordHash || '');
+    if (!ok) return res.status(401).json({ error: 'Identifiants invalides' });
+    const token = sign(user);
+    let changed = false;
+    if (!user.memberId) { user.memberId = generateMemberId(db); changed = true; }
+    if (changed) writeDb(db);
+    res.json({ token, user: ensureUserShape(user, db) });
+  } catch (e) {
+    console.error('login error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
 app.get('/api/auth/me', authRequired, (req, res) => {
@@ -424,16 +458,47 @@ app.get('/api/auth/me', authRequired, (req, res) => {
 });
 
 // Profile
-app.patch('/api/profile', authRequired, (req, res) => {
-  const { username, onboardingDone } = req.body || {};
-  if (username !== undefined && String(username).trim().length === 0) return res.status(400).json({ error: 'Nom d’utilisateur invalide' });
-  const db = readDb();
-  const user = db.users.find(u => u.id === req.user.id);
-  if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
-  if (username !== undefined) user.username = String(username).trim().slice(0, 20);
-  if (onboardingDone !== undefined) user.onboardingDone = !!onboardingDone;
-  writeDb(db);
-  res.json(ensureUserShape(user, db));
+app.patch('/api/profile', authRequired, async (req, res) => {
+  try {
+    const { username, onboardingDone } = req.body || {};
+    if (username !== undefined && String(username).trim().length === 0) return res.status(400).json({ error: 'Nom d’utilisateur invalide' });
+
+    if (usingPostgres()) {
+      const pool = getPool();
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const uRes = await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [req.user.id]);
+        if (!uRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Utilisateur introuvable' }); }
+        const sets = ['updated_at=NOW()'];
+        const vals = [];
+        let i = 1;
+        if (username !== undefined) { sets.push(`username=$${i++}`); vals.push(String(username).trim().slice(0, 20)); }
+        if (onboardingDone !== undefined) { sets.push(`onboarding_done=$${i++}`); vals.push(!!onboardingDone); }
+        vals.push(req.user.id);
+        await client.query(`UPDATE users SET ${sets.join(', ')} WHERE id=$${i}`, vals);
+        await client.query('COMMIT');
+        try { await initDb(); } catch {}
+        const db = readDb();
+        const user = db.users.find(u => u.id === req.user.id);
+        return res.json(ensureUserShape(user, db));
+      } catch (e) {
+        try { await client.query('ROLLBACK'); } catch {}
+        throw e;
+      } finally { client.release(); }
+    }
+
+    const db = readDb();
+    const user = db.users.find(u => u.id === req.user.id);
+    if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    if (username !== undefined) user.username = String(username).trim().slice(0, 20);
+    if (onboardingDone !== undefined) user.onboardingDone = !!onboardingDone;
+    writeDb(db);
+    res.json(ensureUserShape(user, db));
+  } catch (e) {
+    console.error('profile update error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
 // Wallet
