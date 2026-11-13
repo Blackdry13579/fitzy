@@ -83,9 +83,9 @@ export function HomePage() {
           <div className="balance-bg" aria-hidden="true" />
           <div className="balance-overlay" aria-hidden="true" />
           <div className="balance-content">
-            <p className="label">Solde Total</p>
+            <p className="label">Solde disponible</p>
             <h1 className="amount">{(user?.balance ?? 0).toLocaleString('fr-FR')} <span>FCFA</span></h1>
-            <p className="bonus-line">Bonus cumulés : {(user?.bonus ?? 0).toLocaleString('fr-FR')} FCFA</p>
+            <p className="bonus-line">Bonus & commissions cumulés : {(user?.bonus ?? 0).toLocaleString('fr-FR')} FCFA</p>
             <div className="actions">
               <Link to="/depot" className="action-btn clay-btn"><img src="https://raw.githubusercontent.com/microsoft/fluentui-emoji/main/assets/Dollar%20banknote/3D/dollar_banknote_3d.png" alt="" /> Dépôt</Link>
               <Link to="/retrait" className="action-btn ghost clay-btn"><img src="https://raw.githubusercontent.com/microsoft/fluentui-emoji/main/assets/Credit%20card/3D/credit_card_3d.png" alt="" /> Retrait</Link>

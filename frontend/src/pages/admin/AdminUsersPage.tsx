@@ -30,7 +30,7 @@ export function AdminUsersPage() {
     const s=q.toLowerCase(); if(!s) return true;
     return [u.username,u.phone,u.memberId,u.country,u.inviteCode,u.id].some(v=>String(v||'').toLowerCase().includes(s));
   }), [items,q]);
-  const onExport = () => exportCsv('utilisateurs.csv', filtered.map(u=>({createdAt:u.createdAt?new Date(u.createdAt).toLocaleString('fr-FR'):'',memberId:u.memberId||'',username:u.username||'',phone:u.phone||'',country:u.country||'',balance:u.balance||0,bonus:u.bonus||0,inviteCode:u.inviteCode||''})), [{k:'createdAt',l:"Date d'inscription"},{k:'memberId',l:'ID membre'},{k:'username',l:'Utilisateur'},{k:'phone',l:'Téléphone'},{k:'country',l:'Pays'},{k:'balance',l:'Solde'},{k:'bonus',l:'Bonus'},{k:'inviteCode',l:'Code invite'}]);
+  const onExport = () => exportCsv('utilisateurs.csv', filtered.map(u=>({createdAt:u.createdAt?new Date(u.createdAt).toLocaleString('fr-FR'):'',memberId:u.memberId||'',username:u.username||'',phone:u.phone||'',country:u.country||'',balance:u.balance||0,bonus:u.bonus||0,inviteCode:u.inviteCode||''})), [{k:'createdAt',l:"Date d'inscription"},{k:'memberId',l:'ID membre'},{k:'username',l:'Utilisateur'},{k:'phone',l:'Téléphone'},{k:'country',l:'Pays'},{k:'balance',l:'Solde disponible'},{k:'bonus',l:'Bonus cumulés'},{k:'inviteCode',l:'Code invite'}]);
 
   const dstats = useMemo(() => {
     if (!detail) return null;
@@ -50,7 +50,7 @@ export function AdminUsersPage() {
       {error && <p className="err">{error}</p>}
       {loading ? <p>Chargement...</p> : (
         <div className="table-wrap card"><table>
-          <thead><tr><th>Date d'inscription</th><th>ID membre</th><th>Téléphone</th><th>Pays</th><th>Solde actuel</th><th>Bonus</th><th>Code invite</th><th>Parrain</th><th>Détail</th></tr></thead>
+          <thead><tr><th>Date d'inscription</th><th>ID membre</th><th>Téléphone</th><th>Pays</th><th>Solde disponible</th><th>Bonus cumulés</th><th>Code invite</th><th>Parrain</th><th>Détail</th></tr></thead>
           <tbody>{filtered.map(u=>(
             <tr key={u.id}>
               <td className="date">{u.createdAt ? new Date(u.createdAt).toLocaleString('fr-FR') : '-'}</td>
@@ -81,7 +81,7 @@ export function AdminUsersPage() {
         </div>
         <div className="grid">
           <div><label>Code invite</label><p>{detail.inviteCode||'-'}</p></div>
-          <div><label>Bonus</label><p>{fmt(detail.bonus||0)} FCFA</p></div>
+          <div><label>Bonus & commissions cumulés</label><p>{fmt(detail.bonus||0)} FCFA</p></div>
           <div><label>Parrain (lié à)</label><p>{detail.referrer ? `${detail.referrer.username||'Utilisateur'} · ${detail.referrer.phone||''} · ID ${detail.referrer.memberId||'-'}` : 'Aucun'}</p></div>
           <div><label>Dernière activité</label><p>{detail.lastActiveAt ? new Date(detail.lastActiveAt).toLocaleString('fr-FR') : '-'}</p></div>
         </div>
@@ -89,7 +89,7 @@ export function AdminUsersPage() {
           <div className="edit">
             <label>Pseudo<input value={edit.username} onChange={e=>setEdit({...edit,username:e.target.value})}/></label>
             <label>Solde<input type="number" value={edit.balance} onChange={e=>setEdit({...edit,balance:e.target.value})}/></label>
-            <p className="hint">Le total Bonus est calculé automatiquement à partir des transactions (bonus/commissions confirmés).</p>
+            <p className="hint">Le total « Bonus & commissions cumulés » est calculé automatiquement à partir des transactions confirmées (bonus/commissions). Le solde disponible inclut les bonus crédités sur le portefeuille.</p>
             <div className="actions"><button onClick={()=>setEdit(null)}>Annuler</button><button className="ok" onClick={save}>Enregistrer</button></div>
           </div>
         )}

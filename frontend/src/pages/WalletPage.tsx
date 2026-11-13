@@ -39,7 +39,7 @@ export function WalletPage() {
           <div className="balance-content">
             <p>Solde disponible</p>
             <h1>{balance.toLocaleString('fr-FR')} <span>FCFA</span></h1>
-            <div className="sub-balance">Bonus cumulés (bonus & commissions) : <strong>{bonusTotal.toLocaleString('fr-FR')} FCFA</strong></div>
+            <div className="sub-balance">Bonus & commissions cumulés : <strong>{bonusTotal.toLocaleString('fr-FR')} FCFA</strong></div>
             <div className="actions">
               <Link to="/depot" className="btn clay-btn"><img src="https://raw.githubusercontent.com/microsoft/fluentui-emoji/main/assets/Dollar%20banknote/3D/dollar_banknote_3d.png" alt="" /> Dépôt</Link>
               <Link to="/retrait" className="btn ghost clay-btn"><img src="https://raw.githubusercontent.com/microsoft/fluentui-emoji/main/assets/Credit%20card/3D/credit_card_3d.png" alt="" /> Retrait</Link>
