@@ -632,6 +632,7 @@ app.get('/api/settings', (_req, res) => {
     maxDeposit: s.maxDeposit,
     depositPresets: s.depositPresets,
     withdrawPresets: s.withdrawPresets,
+    appBaseUrl: APP_BASE_URL,
   });
 });
 
@@ -747,7 +748,9 @@ app.get('/api/admin/users/:id', adminRequired, (req, res) => {
   const referrer = refUser ? adminPublicUser(db, refUser) : (u.referredBy ? { id: u.referredBy } : null);
   const txs = db.transactions.filter(t => t.userId === u.id).sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const purchases = db.purchases.filter(p => p.userId === u.id);
-  res.json({ ...adminPublicUser(db, u), referrer, directReferrals: direct, referral: calcReferral(db, u.id), transactions: txs, purchases });
+  const view = { ...adminPublicUser(db, u), referrer, directReferrals: direct, referral: calcReferral(db, u.id), transactions: txs, purchases };
+  writeDb(db);
+  res.json(view);
 });
 
 app.patch('/api/admin/users/:id', adminRequired, (req, res) => {
