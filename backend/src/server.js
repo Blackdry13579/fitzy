@@ -295,39 +295,109 @@ app.get('/api/machines/:id', (req, res) => {
 
 // Auth
 app.post('/api/auth/register', async (req, res) => {
-  const { phone, password, inviteCode, country } = req.body || {};
-  if (!phone || !password) return res.status(400).json({ error: 'Téléphone et mot de passe requis' });
-  const db = readDb();
-  if (db.users.find(u => u.phone === phone)) return res.status(400).json({ error: 'Numéro déjà utilisé' });
-  const code = String(inviteCode || '').trim().toUpperCase();
-  let referrer = null;
-  if (code) {
-    referrer = db.users.find(u => String(u.inviteCode || '').toUpperCase() === code);
-    if (!referrer) return res.status(400).json({ error: 'Code d’invitation invalide' });
+  try {
+    const { phone, password, inviteCode, country } = req.body || {};
+    if (!phone || !password) return res.status(400).json({ error: 'Téléphone et mot de passe requis' });
+    const code = String(inviteCode || '').trim().toUpperCase();
+
+    if (usingPostgres()) {
+      const pool = getPool();
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const ex = await client.query('SELECT 1 FROM users WHERE phone=$1 LIMIT 1', [phone]);
+        if (ex.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Numéro déjà utilisé' }); }
+
+        let referrer = null;
+        if (code) {
+          const rr = await client.query('SELECT id FROM users WHERE UPPER(invite_code)=$1 LIMIT 1', [code]);
+          if (!rr.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Code d’invitation invalide' }); }
+          referrer = rr.rows[0];
+        }
+
+        // generate unique memberId and inviteCode
+        let memberId = '';
+        for (let i=0;i<20;i++){ const cand = String(Math.floor(10000+Math.random()*90000)); const c=await client.query('SELECT 1 FROM users WHERE member_id=$1 LIMIT 1',[cand]); if(!c.rowCount){ memberId=cand; break; } }
+        if(!memberId) memberId = String(Date.now()).slice(-5);
+        let newInvite = '';
+        for (let i=0;i<20;i++){ const cand = generateInviteCode({users:[]}); const c=await client.query('SELECT 1 FROM users WHERE invite_code=$1 LIMIT 1',[cand]); if(!c.rowCount){ newInvite=cand; break; } }
+        if(!newInvite) newInvite = (generateInviteCode({users:[]}) + Date.now().toString(36).slice(-2)).toUpperCase();
+
+        const userId = uid('usr');
+        const nowIso = new Date().toISOString();
+        const hash = await bcrypt.hash(password, 10);
+        await client.query(`INSERT INTO users (id,member_id,username,phone,country,invite_code,referred_by,password_hash,balance,bonus_total,vip_level,onboarding_done,invite_bonus_awarded,created_at,updated_at)
+          VALUES ($1,$2,'Utilisateur',$3,$4,$5,$6,$7,600,0,0,false,0,$8,NOW())`,
+          [userId, memberId, phone, country || 'BF', newInvite, referrer ? referrer.id : null, hash, nowIso]);
+        await client.query(`INSERT INTO transactions (id,user_id,type,amount,status,label,created_at,updated_at) VALUES ($1,$2,'bonus',600,'confirmed',$3,$4,NOW())`,
+          [uid('tx'), userId, "Bonus d'inscription", nowIso]);
+        await client.query(`INSERT INTO notifications (id,user_id,title,text,type,read,created_at) VALUES ($1,$2,$3,$4,'info',false,$5)`,
+          [uid('ntf'), userId, 'Bienvenue sur FITZONE', 'Votre compte a été créé avec succès. Bonus d’inscription de 600 FCFA ajouté à votre solde.', nowIso]);
+
+        // award invite milestones to referrer
+        if (referrer) {
+          const tiers = [{count:3,total:700},{count:5,total:1200},{count:10,total:3000},{count:15,total:5000}];
+          const dcRes = await client.query('SELECT COUNT(*)::int AS c FROM users WHERE referred_by=$1', [referrer.id]);
+          const directCount = Number(dcRes.rows[0]?.c || 0);
+          let target = 0; for (const t of tiers) if (directCount >= t.count) target = t.total;
+          const refRes = await client.query('SELECT invite_bonus_awarded FROM users WHERE id=$1 FOR UPDATE', [referrer.id]);
+          const awarded = Number(refRes.rows[0]?.invite_bonus_awarded || 0);
+          if (target > awarded) {
+            const delta = target - awarded;
+            await client.query('UPDATE users SET balance = balance + $1, invite_bonus_awarded=$2, updated_at=NOW() WHERE id=$3', [delta, target, referrer.id]);
+            await client.query(`INSERT INTO transactions (id,user_id,type,amount,status,label,created_at,updated_at) VALUES ($1,$2,'bonus',$3,'confirmed',$4,$5,NOW())`,
+              [uid('tx'), referrer.id, delta, `Bonus invitation (${directCount} invités)`, nowIso]);
+            await client.query(`INSERT INTO notifications (id,user_id,title,text,type,read,created_at) VALUES ($1,$2,$3,$4,'wallet',false,$5)`,
+              [uid('ntf'), referrer.id, 'Bonus d’invitation', `Félicitations ! Vous avez atteint ${directCount} invités et reçu ${delta.toLocaleString('fr-FR')} FCFA.`, nowIso]);
+          }
+        }
+
+        await client.query('COMMIT');
+        try { await initDb(); } catch {}
+        const db = readDb();
+        const user = db.users.find(u => u.id === userId);
+        const token = sign({ id: userId, phone });
+        return res.json({ token, user: ensureUserShape(user, db) });
+      } catch (e) {
+        try { await client.query('ROLLBACK'); } catch {}
+        throw e;
+      } finally { client.release(); }
+    }
+
+    const db = readDb();
+    if (db.users.find(u => u.phone === phone)) return res.status(400).json({ error: 'Numéro déjà utilisé' });
+    let referrer = null;
+    if (code) {
+      referrer = db.users.find(u => String(u.inviteCode || '').toUpperCase() === code);
+      if (!referrer) return res.status(400).json({ error: 'Code d’invitation invalide' });
+    }
+    const user = {
+      id: uid('usr'),
+      memberId: generateMemberId(db),
+      username: 'Utilisateur',
+      phone,
+      country: country || 'BF',
+      inviteCode: generateInviteCode(db),
+      referredBy: referrer ? referrer.id : null,
+      passwordHash: await bcrypt.hash(password, 10),
+      balance: 600,
+      bonus: 0,
+      onboardingDone: false,
+      inviteBonusAwarded: 0,
+      createdAt: new Date().toISOString(),
+    };
+    db.users.push(user);
+    db.transactions.push({ id: uid('tx'), userId: user.id, type: 'bonus', amount: 600, status: 'confirmed', label: "Bonus d'inscription", createdAt: new Date().toISOString() });
+    user.bonus = computeBonusTotal(db, user.id);
+    db.notifications.push({ id: uid('ntf'), userId: user.id, title: 'Bienvenue sur FITZONE', text: 'Votre compte a été créé avec succès. Bonus d’inscription de 600 FCFA ajouté à votre solde.', type: 'info', read: false, createdAt: new Date().toISOString() });
+    if (referrer) awardInviteMilestones(db, referrer.id);
+    writeDb(db);
+    const token = sign(user);
+    res.json({ token, user: ensureUserShape(user, db) });
+  } catch (e) {
+    console.error('register error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
   }
-  const user = {
-    id: uid('usr'),
-    memberId: generateMemberId(db),
-    username: 'Utilisateur',
-    phone,
-    country: country || 'BF',
-    inviteCode: generateInviteCode(db),
-    referredBy: referrer ? referrer.id : null,
-    passwordHash: await bcrypt.hash(password, 10),
-    balance: 600,
-    bonus: 0,
-    onboardingDone: false,
-    inviteBonusAwarded: 0,
-    createdAt: new Date().toISOString(),
-  };
-  db.users.push(user);
-  db.transactions.push({ id: uid('tx'), userId: user.id, type: 'bonus', amount: 600, status: 'confirmed', label: "Bonus d'inscription", createdAt: new Date().toISOString() });
-  user.bonus = computeBonusTotal(db, user.id);
-  db.notifications.push({ id: uid('ntf'), userId: user.id, title: 'Bienvenue sur FITZONE', text: 'Votre compte a été créé avec succès. Bonus d’inscription de 600 FCFA ajouté à votre solde.', type: 'info', read: false, createdAt: new Date().toISOString() });
-  if (referrer) awardInviteMilestones(db, referrer.id);
-  writeDb(db);
-  const token = sign(user);
-  res.json({ token, user: ensureUserShape(user, db) });
 });
 
 app.post('/api/auth/login', async (req, res) => {
