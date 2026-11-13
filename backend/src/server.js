@@ -850,7 +850,12 @@ export { app, calcReferral, creditReferralCommissionsForPurchase, getSettings, g
 const port = process.env.PORT || 4000;
 const isDirectRun = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isDirectRun) {
-  app.listen(port, () => {
-    console.log(`[backend] listening on ${port}`);
+  initDb().then(() => {
+    app.listen(port, () => {
+      console.log(`[backend] listening on ${port}`);
+    });
+  }).catch((err) => {
+    console.error('Failed to initialize database:', err);
+    process.exit(1);
   });
 }
