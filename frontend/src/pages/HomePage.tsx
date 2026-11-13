@@ -85,6 +85,7 @@ export function HomePage() {
           <div className="balance-content">
             <p className="label">Solde Total</p>
             <h1 className="amount">{(user?.balance ?? 0).toLocaleString('fr-FR')} <span>FCFA</span></h1>
+            <p className="bonus-line">Bonus cumulés : {(user?.bonus ?? 0).toLocaleString('fr-FR')} FCFA</p>
             <div className="actions">
               <Link to="/depot" className="action-btn clay-btn"><img src="https://raw.githubusercontent.com/microsoft/fluentui-emoji/main/assets/Dollar%20banknote/3D/dollar_banknote_3d.png" alt="" /> Dépôt</Link>
               <Link to="/retrait" className="action-btn ghost clay-btn"><img src="https://raw.githubusercontent.com/microsoft/fluentui-emoji/main/assets/Credit%20card/3D/credit_card_3d.png" alt="" /> Retrait</Link>
@@ -233,6 +234,7 @@ export function HomePage() {
         .label { margin: 0; font-size: 13px; color: rgba(255,255,255,0.95); text-shadow: 0 1px 2px rgba(0,0,0,.25); }
         .amount { margin: 4px 0 0; font-size: 34px; color: #fff; text-shadow: 0 2px 8px rgba(0,0,0,.25); }
         .amount span { font-size: 14px; font-weight: 600; }
+        .bonus-line { margin: 6px 0 0; font-size: 12px; color: rgba(255,255,255,.95); background: rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.18); display:inline-block; padding:5px 10px; border-radius:999px; }
         .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: auto; padding-top: 18px; }
         .action-btn { height: 42px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border-radius: 14px; background: #fff; color: #1d4ed8; text-decoration: none; font-weight: 700; font-size: 14px; border: 1px solid rgba(255,255,255,0.9); box-shadow: 0 4px 12px rgba(15,23,42,0.18); }
         .action-btn.ghost { background: #fff; color: #0f172a; }

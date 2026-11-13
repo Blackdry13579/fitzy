@@ -988,14 +988,22 @@ app.get('/api/referral', authRequired, async (req, res) => {
 });
 
 // Admin
-app.post('/api/admin/login', (req, res) => {
-  const { phone, password } = req.body || {};
-  const db = readDb();
-  const creds = getAdminCreds(db);
-  if (String(phone) !== String(creds.phone) || String(password) !== String(creds.password)) {
-    return res.status(401).json({ error: 'Identifiants admin invalides' });
-  }
-  res.json({ token: signAdmin(creds.phone), admin: { phone: creds.phone, role: 'admin' } });
+app.post('/api/admin/login', async (req, res) => {
+  try {
+    const { phone, password } = req.body || {};
+    let creds;
+    if (usingPostgres()) {
+      const map = await pgDb.getSettings();
+      creds = getAdminCreds({ settings: map || {} });
+    } else {
+      const db = readDb();
+      creds = getAdminCreds(db);
+    }
+    if (String(phone) !== String(creds.phone) || String(password) !== String(creds.password)) {
+      return res.status(401).json({ error: 'Identifiants admin invalides' });
+    }
+    res.json({ token: signAdmin(creds.phone), admin: { phone: creds.phone, role: 'admin' } });
+  } catch (e) { console.error('admin login error', e); res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
 async function sendRecoveryEmail(to, code) {
@@ -1016,38 +1024,69 @@ async function sendRecoveryEmail(to, code) {
 }
 
 app.post('/api/admin/recover/request', async (req, res) => {
-  const db = readDb();
-  const creds = getAdminCreds(db);
-  if (!creds.email) return res.status(400).json({ error: 'Aucun email de récupération configuré pour l’admin. Configurez-le dans les paramètres (ou via la base/env).' });
-  const code = String(Math.floor(100000 + Math.random() * 900000));
-  db.adminRecovery = { code, email: creds.email, expiresAt: Date.now() + 15 * 60 * 1000 };
-  writeDb(db);
   try {
-    const out = await sendRecoveryEmail(creds.email, code);
-    if (out.sent) return res.json({ ok: true, message: `Code envoyé à ${creds.email}` });
-    // fallback if SMTP not configured
-    return res.json({ ok: true, message: 'SMTP non configuré. Code de récupération (mode secours) affiché.', devCode: code });
-  } catch (e) {
-    return res.json({ ok: true, message: 'Envoi email échoué, code de secours affiché.', devCode: code });
-  }
+    let db = readDb();
+    let creds;
+    if (usingPostgres()) {
+      const map = await pgDb.getSettings();
+      creds = getAdminCreds({ settings: map || {} });
+    } else {
+      creds = getAdminCreds(db);
+    }
+    if (!creds.email) return res.status(400).json({ error: 'Aucun email de récupération configuré pour l’admin. Configurez-le dans les paramètres (ou via la base/env).' });
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const recovery = { code, email: creds.email, expiresAt: Date.now() + 15 * 60 * 1000 };
+    if (usingPostgres()) {
+      await pgDb.setSettings({ adminRecovery: recovery });
+      try { await initDb(); } catch {}
+    } else {
+      db.adminRecovery = recovery;
+      writeDb(db);
+    }
+    try {
+      const out = await sendRecoveryEmail(creds.email, code);
+      if (out.sent) return res.json({ ok: true, message: `Code envoyé à ${creds.email}` });
+      return res.json({ ok: true, message: 'SMTP non configuré. Code de récupération (mode secours) affiché.', devCode: code });
+    } catch (e) {
+      return res.json({ ok: true, message: 'Envoi email échoué, code de secours affiché.', devCode: code });
+    }
+  } catch (e) { console.error('admin recover request error', e); res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
-app.post('/api/admin/recover/reset', (req, res) => {
-  const { code, phone, password, email } = req.body || {};
-  const db = readDb();
-  const rec = db.adminRecovery;
-  if (!rec || !rec.code || Date.now() > rec.expiresAt) return res.status(400).json({ error: 'Code invalide ou expiré' });
-  if (String(code) !== String(rec.code)) return res.status(400).json({ error: 'Code incorrect' });
-  if (!phone || !password) return res.status(400).json({ error: 'Nouvel identifiant et mot de passe requis' });
-  const s = getSettings(db);
-  s.adminPhone = String(phone);
-  s.adminPassword = String(password);
-  if (email) s.adminEmail = String(email);
-  db.settings = s;
-  delete db.adminRecovery;
-  logAdmin(db, req, 'admin.credentials_reset', { phone: s.adminPhone });
-  writeDb(db);
-  res.json({ ok: true, message: 'Identifiants admin mis à jour. Vous pouvez vous connecter.' });
+app.post('/api/admin/recover/reset', async (req, res) => {
+  try {
+    const { code, phone, password, email } = req.body || {};
+    if (!phone || !password) return res.status(400).json({ error: 'Nouvel identifiant et mot de passe requis' });
+
+    if (usingPostgres()) {
+      const map = await pgDb.getSettings();
+      const rec = map?.adminRecovery;
+      if (!rec || !rec.code || Date.now() > Number(rec.expiresAt || 0)) return res.status(400).json({ error: 'Code invalide ou expiré' });
+      if (String(code) !== String(rec.code)) return res.status(400).json({ error: 'Code incorrect' });
+      const s = getSettings({ settings: map || {} });
+      s.adminPhone = String(phone);
+      s.adminPassword = String(password);
+      if (email) s.adminEmail = String(email);
+      const patch = { ...s, adminRecovery: null };
+      await pgDb.setSettings(patch);
+      try { await initDb(); } catch {}
+      return res.json({ ok: true, message: 'Identifiants admin mis à jour. Vous pouvez vous connecter.' });
+    }
+
+    const db = readDb();
+    const rec = db.adminRecovery;
+    if (!rec || !rec.code || Date.now() > rec.expiresAt) return res.status(400).json({ error: 'Code invalide ou expiré' });
+    if (String(code) !== String(rec.code)) return res.status(400).json({ error: 'Code incorrect' });
+    const s = getSettings(db);
+    s.adminPhone = String(phone);
+    s.adminPassword = String(password);
+    if (email) s.adminEmail = String(email);
+    db.settings = s;
+    delete db.adminRecovery;
+    logAdmin(db, req, 'admin.credentials_reset', { phone: s.adminPhone });
+    writeDb(db);
+    res.json({ ok: true, message: 'Identifiants admin mis à jour. Vous pouvez vous connecter.' });
+  } catch (e) { console.error('admin recover reset error', e); res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
 function dayKey(d) { return new Date(d).toISOString().slice(0,10); }
@@ -1356,13 +1395,17 @@ app.patch('/api/admin/transactions/:id', adminRequired, async (req, res) => {
         if (!tRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Transaction introuvable' }); }
         const tx = tRes.rows[0];
         if (!['deposit','withdraw'].includes(tx.type)) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Action non supportée pour ce type' }); }
-        // Règles: dépôt crédité au solde dès la soumission (pending) -> confirmation débloque l'achat, pas de recrédit.
-        // Retrait débité à la demande -> rejet sans remboursement.
+        // Règles: dépôt crédité au solde dès la soumission (pending) -> confirmation valide/débloque l'achat, pas de recrédit.
+        // Retrait débité à la demande -> rejet rembourse le montant débité.
+        const prevStatus = tx.status;
+        if (tx.type === 'withdraw' && prevStatus === 'pending' && status === 'rejected') {
+          await client.query('UPDATE users SET balance = balance + $1, updated_at=NOW() WHERE id=$2', [Number(tx.amount || 0), tx.user_id]);
+        }
         await client.query('UPDATE transactions SET status=$1, updated_at=NOW() WHERE id=$2', [status, tx.id]);
 
         // audit log
         const logId = uid('log');
-        await client.query('INSERT INTO audit_logs (id,action,details,admin,created_at) VALUES ($1,$2,$3::jsonb,$4,NOW())', [logId, 'transaction.update', JSON.stringify({ id: tx.id, type: tx.type, status }), (req.admin?.phone || 'admin')]);
+        await client.query('INSERT INTO audit_logs (id,action,details,admin,created_at) VALUES ($1,$2,$3::jsonb,$4,NOW())', [logId, 'transaction.update', JSON.stringify({ id: tx.id, type: tx.type, from: prevStatus, status }), (req.admin?.phone || 'admin')]);
 
         await client.query('COMMIT');
         try { await initDb(); } catch {}
@@ -1380,12 +1423,14 @@ app.patch('/api/admin/transactions/:id', adminRequired, async (req, res) => {
     const tx = db.transactions.find(t => t.id === req.params.id);
     if (!tx) return res.status(404).json({ error: 'Transaction introuvable' });
     if (!['deposit','withdraw'].includes(tx.type)) return res.status(400).json({ error: 'Action non supportée pour ce type' });
-    // pas de remboursement en cas de rejet de retrait
-    if (tx.type === 'deposit' && tx.status === 'pending' && status === 'confirmed') {
-      // solde déjà crédité à la soumission du dépôt; la confirmation admin valide le dépôt (débloque les achats)
+    const prevStatus = tx.status;
+    if (tx.type === 'withdraw' && prevStatus === 'pending' && status === 'rejected') {
+      const user = db.users.find(u => u.id === tx.userId);
+      if (user) user.balance = (user.balance || 0) + Number(tx.amount || 0);
     }
+    // dépôt: solde déjà crédité à la soumission (pending); confirmation admin valide/débloque l'achat, pas de recrédit.
     tx.status = status;
-    logAdmin(db, req, 'transaction.update', { id: tx.id, type: tx.type, status });
+    logAdmin(db, req, 'transaction.update', { id: tx.id, type: tx.type, from: prevStatus, status });
     writeDb(db);
     const txUser = db.users.find(u=>u.id===tx.userId);
     res.json({ ...tx, user: txUser ? adminPublicUser(db, txUser) : { id: tx.userId } });

@@ -8,12 +8,14 @@ type Tx = { id: string; label?: string; type: string; amount: number; status?: s
 export function WalletPage() {
   const [filter, setFilter] = useState<'tout' | 'depot' | 'retrait'>('tout');
   const [balance, setBalance] = useState(0);
+  const [bonusTotal, setBonusTotal] = useState(0);
   const [txs, setTxs] = useState<Tx[]>([]);
   const [affiliation, setAffiliation] = useState(0);
 
   useEffect(() => {
-    api<{ balance: number; transactions: Tx[] }>('/wallet').then((d) => {
+    api<{ balance: number; bonus?: number; transactions: Tx[] }>('/wallet').then((d) => {
       setBalance(d.balance || 0);
+      setBonusTotal(Number(d.bonus || 0));
       setTxs(d.transactions || []);
     }).catch(() => {});
     api<{ totalEarned?: number; levels: { commission: number }[] }>('/referral').then((d) => {
@@ -37,6 +39,7 @@ export function WalletPage() {
           <div className="balance-content">
             <p>Solde disponible</p>
             <h1>{balance.toLocaleString('fr-FR')} <span>FCFA</span></h1>
+            <div className="sub-balance">Bonus cumulés (bonus & commissions) : <strong>{bonusTotal.toLocaleString('fr-FR')} FCFA</strong></div>
             <div className="actions">
               <Link to="/depot" className="btn clay-btn"><img src="https://raw.githubusercontent.com/microsoft/fluentui-emoji/main/assets/Dollar%20banknote/3D/dollar_banknote_3d.png" alt="" /> Dépôt</Link>
               <Link to="/retrait" className="btn ghost clay-btn"><img src="https://raw.githubusercontent.com/microsoft/fluentui-emoji/main/assets/Credit%20card/3D/credit_card_3d.png" alt="" /> Retrait</Link>
@@ -100,7 +103,9 @@ export function WalletPage() {
         .banner-overlay{position:absolute;inset:0;background:linear-gradient(110deg, rgba(15,23,42,.78) 0%, rgba(30,64,175,.55) 50%, rgba(15,23,42,.35) 100%)}
         .balance-content{position:relative;z-index:1}
         .balance-card p { margin:0; font-size:13px; color:rgba(255,255,255,0.95); }
-        .balance-card h1 { margin:4px 0 14px; font-size:32px; color:#fff; }
+        .balance-card h1 { margin:4px 0 8px; font-size:32px; color:#fff; }
+        .sub-balance { margin:0 0 14px; font-size:12px; color:rgba(255,255,255,.95); background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.18); display:inline-block; padding:6px 10px; border-radius:999px; backdrop-filter:blur(2px); }
+        .sub-balance strong { color:#fff; }
         .balance-card span { font-size:14px; }
         .actions { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
         .btn { height:44px; display:inline-flex; align-items:center; justify-content:center; gap:6px; border-radius:16px; background:rgba(255,255,255,0.22); color:#fff; text-decoration:none; font-weight:600; border:1px solid rgba(255,255,255,0.25); backdrop-filter:blur(2px); }
