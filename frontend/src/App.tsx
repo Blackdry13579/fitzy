@@ -66,9 +66,9 @@ function App() {
           <Route path="audit" element={<AdminAuditPage />} />
         </Route>
         <Route element={<Layout />}>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/catalogue" element={<CatalogPage />} />
-          <Route path="/catalogue/:id" element={<MachineDetailPage />} />
+          <Route path="/" element={<RequireAuth><HomePage /></RequireAuth>} />
+          <Route path="/catalogue" element={<RequireAuth><CatalogPage /></RequireAuth>} />
+          <Route path="/catalogue/:id" element={<RequireAuth><MachineDetailPage /></RequireAuth>} />
           <Route path="/portefeuille" element={<RequireAuth><WalletPage /></RequireAuth>} />
           <Route path="/depot" element={<RequireAuth><DepositPage /></RequireAuth>} />
           <Route path="/retrait" element={<RequireAuth><WithdrawPage /></RequireAuth>} />

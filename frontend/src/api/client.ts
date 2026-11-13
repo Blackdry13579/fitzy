@@ -28,6 +28,11 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   if (!res.ok) {
     if (res.status === 401) {
       setToken(null);
+      const isAuthAttempt = path === '/auth/login' || path === '/auth/register';
+      const onAuthPage = /^\/(connexion|inscription|invite)(\/|$)/.test(window.location.pathname);
+      if (!isAuthAttempt && !onAuthPage) {
+        window.location.replace('/connexion');
+      }
     }
     throw new ApiError((data && (data.error || data.message)) || 'Erreur serveur', res.status);
   }
