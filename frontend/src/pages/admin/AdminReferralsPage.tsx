@@ -8,16 +8,25 @@ function exportCsv(filename:string, rows:any[], cols:{k:string,l:string}[]) {
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; a.click();
 }
 
+function levelInfo(depth:number) {
+  if (depth===0) return {label:'Racine', cls:'l0'};
+  if (depth===1) return {label:'N1', cls:'l1'};
+  if (depth===2) return {label:'N2', cls:'l2'};
+  if (depth===3) return {label:'N3', cls:'l3'};
+  return {label:`N${depth}`, cls:'l4'};
+}
 function TreeNode({ n, depth=0 }: any) {
-  const [open, setOpen] = useState(depth < 1);
+  const [open, setOpen] = useState(depth < 2);
   const has = n.children && n.children.length > 0;
+  const li = levelInfo(depth);
   return (
     <div className="tn" style={{marginLeft: depth?16:0}}>
-      <div className="tn-row">
+      <div className={`tn-row ${li.cls}`}>
         {has ? <button className="tog" onClick={()=>setOpen(o=>!o)}>{open?'−':'+'}</button> : <span className="dot" />}
+        <span className={`lvl ${li.cls}`}>{li.label}</span>
         <div className="tn-info"><strong>{n.username||'Utilisateur'}</strong><span>{n.phone} · ID {n.memberId||'-'} · Code {n.inviteCode||'-'}</span></div>
       </div>
-      {open && has && <div className="tn-kids">{n.children.map((c:any)=><TreeNode key={c.id} n={c} depth={depth+1} />)}</div>}
+      {open && has && <div className={`tn-kids ${li.cls}`}>{n.children.map((c:any)=><TreeNode key={c.id} n={c} depth={depth+1} />)}</div>}
     </div>
   );
 }
@@ -47,7 +56,16 @@ export function AdminReferralsPage() {
       </div>
       {error && <p className="err">{error}</p>}
       {loading ? <p>Chargement...</p> : view==='tree' ? (
-        <div className="card tree">{tree.map(n=><TreeNode key={n.id} n={n} />)}{!tree.length && <p className="empty">Aucune donnée</p>}</div>
+        <div className="card tree">
+          <div className="legend">
+            <span className="lvl l0">Racine</span>
+            <span className="lvl l1">Niveau 1 (direct)</span>
+            <span className="lvl l2">Niveau 2</span>
+            <span className="lvl l3">Niveau 3</span>
+            <span className="lvl l4">Niveau 4+</span>
+          </div>
+          {tree.map(n=><TreeNode key={n.id} n={n} />)}{!tree.length && <p className="empty">Aucune donnée</p>}
+        </div>
       ) : (
         <div className="table-wrap card"><table>
           <thead><tr><th>Utilisateur</th><th>Téléphone</th><th>ID membre</th><th>Code</th><th>Parrain (lié à)</th><th>Filleuls directs</th><th>Équipe totale</th><th>Commissions</th><th>Détail</th></tr></thead>
@@ -105,14 +123,31 @@ export function AdminReferralsPage() {
         .empty{color:#94a3b8;text-align:center}
         .linkbtn{height:32px;padding:0 12px;border-radius:8px;border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;font-weight:600;cursor:pointer}
         .tree{padding:14px;overflow:auto}
-        .tn{margin:4px 0}
-        .tn-row{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid #e5e7eb;border-radius:12px;background:linear-gradient(180deg,#fff,#f8fafc)}
-        .tog{width:26px;height:26px;border-radius:8px;border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;font-weight:800;cursor:pointer}
-        .dot{width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;color:#94a3b8}
+        .legend{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;padding:10px;border-radius:12px;background:#f8fafc;border:1px solid #e5e7eb}
+        .tn{margin:6px 0}
+        .tn-row{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid #e5e7eb;border-left-width:5px;border-radius:12px;background:linear-gradient(180deg,#fff,#f8fafc)}
+        .tn-row.l0{border-left-color:#64748b;background:linear-gradient(180deg,#fff,#f1f5f9)}
+        .tn-row.l1{border-left-color:#2563eb;background:linear-gradient(180deg,#fff,#eff6ff)}
+        .tn-row.l2{border-left-color:#7c3aed;background:linear-gradient(180deg,#fff,#f5f3ff)}
+        .tn-row.l3{border-left-color:#059669;background:linear-gradient(180deg,#fff,#ecfdf5)}
+        .tn-row.l4{border-left-color:#d97706;background:linear-gradient(180deg,#fff,#fffbeb)}
+        .lvl{display:inline-flex;align-items:center;justify-content:center;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap}
+        .lvl.l0{background:#e2e8f0;color:#334155}
+        .lvl.l1{background:#dbeafe;color:#1d4ed8}
+        .lvl.l2{background:#ede9fe;color:#6d28d9}
+        .lvl.l3{background:#d1fae5;color:#047857}
+        .lvl.l4{background:#fef3c7;color:#92400e}
+        .tog{width:26px;height:26px;border-radius:8px;border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;font-weight:800;cursor:pointer;flex-shrink:0}
+        .dot{width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;color:#94a3b8;flex-shrink:0}
         .dot::before{content:"•";font-size:18px}
-        .tn-info{display:flex;flex-direction:column}
+        .tn-info{display:flex;flex-direction:column;min-width:0}
         .tn-info span{font-size:12px;color:#64748b}
-        .tn-kids{margin-top:6px;padding-left:10px;border-left:2px dashed #bfdbfe}
+        .tn-kids{margin-top:6px;padding-left:12px;border-left:3px dashed #cbd5e1}
+        .tn-kids.l0{border-left-color:#94a3b8}
+        .tn-kids.l1{border-left-color:#60a5fa}
+        .tn-kids.l2{border-left-color:#a78bfa}
+        .tn-kids.l3{border-left-color:#34d399}
+        .tn-kids.l4{border-left-color:#fbbf24}
         .modal{position:fixed;inset:0;background:rgba(15,23,42,.45);display:flex;align-items:center;justify-content:center;padding:16px;z-index:50}
         .panel{width:100%;max-width:900px;max-height:90vh;overflow:auto;background:#fff;border-radius:20px;padding:18px}
         .ph{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}.ph h2{margin:0}
