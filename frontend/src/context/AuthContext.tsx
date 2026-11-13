@@ -8,6 +8,7 @@ export type User = {
   phone: string;
   country: string;
   inviteCode: string;
+  inviteLink?: string;
   balance: number;
   bonus: number;
   vipLevel?: number;

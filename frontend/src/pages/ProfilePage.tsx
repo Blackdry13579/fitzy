@@ -8,7 +8,7 @@ export function ProfilePage() {
   const navigate = useNavigate();
   const copy = (t: string) => navigator.clipboard?.writeText(t);
   const inviteCode = user?.inviteCode || '------';
-  const link = `https://fitzone.app/invite/${inviteCode}`;
+  const link = (user as any)?.inviteLink || `https://fitzone.app/invite/${inviteCode}`;
   const balance = user?.balance ?? 0;
   const onLogout = () => { logout(); navigate('/connexion'); };
 

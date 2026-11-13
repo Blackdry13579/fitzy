@@ -13,9 +13,11 @@ import { machines as seedMachines } from './modules/machines.js';
 dotenv.config();
 
 const app = express();
-app.use(cors());
+const corsOrigins = (process.env.CORS_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
+app.use(cors(corsOrigins.length ? { origin: corsOrigins, credentials: true } : {}));
 app.use(express.json());
 
+const APP_BASE_URL = (process.env.APP_BASE_URL || process.env.PUBLIC_APP_URL || 'https://fitzone.app').replace(/\/$/, '');
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 const sign = (user) => jwt.sign({ id: user.id, phone: user.phone }, JWT_SECRET, { expiresIn: '30d' });
 const signAdmin = (phone) => jwt.sign({ id: 'admin', role: 'admin', phone }, JWT_SECRET, { expiresIn: '7d' });
@@ -140,14 +142,16 @@ function ensureUserShape(u, db) {
   }
   const bonusTotal = db ? computeBonusTotal(db, u.id) : (u.bonus ?? 0);
   if (db) u.bonus = bonusTotal;
-  const vipLevel = db ? getUserVipLevel(db, u.id) : (u.vipLevel ?? 1);
+  const vipLevel = db ? getUserVipLevel(db, u.id) : (u.vipLevel ?? 0);
+  const inviteCode = u.inviteCode || '';
   return {
     id: u.id,
     memberId: u.memberId || '',
     username: u.username || 'Utilisateur',
     phone: u.phone,
     country: u.country || 'BF',
-    inviteCode: u.inviteCode,
+    inviteCode,
+    inviteLink: `${APP_BASE_URL}/invite/${inviteCode}`,
     referredBy: u.referredBy || null,
     balance: u.balance ?? 0,
     bonus: bonusTotal,
@@ -186,7 +190,7 @@ function calcReferral(db, userId) {
   });
   return {
     code: db.users.find(u=>u.id===userId)?.inviteCode,
-    link: `https://fitzone.app/invite/${db.users.find(u=>u.id===userId)?.inviteCode || ''}`,
+    link: `${APP_BASE_URL}/invite/${db.users.find(u=>u.id===userId)?.inviteCode || ''}`,
     totalEarned,
     inviteBonus: { directCount, awarded: db.users.find(u=>u.id===userId)?.inviteBonusAwarded || 0, target: inviteBonusTarget, tiers },
     levels: [
