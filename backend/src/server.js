@@ -374,69 +374,162 @@ app.get('/api/wallet', authRequired, (req, res) => {
   res.json({ balance: user?.balance ?? 0, bonus: computeBonusTotal(db, req.user.id), transactions: tx });
 });
 
-app.post('/api/wallet/deposit', authRequired, (req, res) => {
-  const { amount, method, otp, merchantCode } = req.body || {};
-  const amt = Number(amount);
-  const db = readDb();
-  const s = getSettings(db);
-  const min = Number(s.minDeposit || 0);
-  const max = Number(s.maxDeposit || 0);
-  if (!amt || amt <= 0) return res.status(400).json({ error: 'Montant invalide' });
-  if (min && amt < min) return res.status(400).json({ error: `Montant minimum ${min} FCFA` });
-  if (max && amt > max) return res.status(400).json({ error: `Montant maximum ${max} FCFA` });
-  if (method === 'otp' && !otp) return res.status(400).json({ error: 'Code OTP requis' });
-  if (method === 'marchand' && !merchantCode) return res.status(400).json({ error: 'Paiement marchand invalide' });
-  const user = db.users.find(u => u.id === req.user.id);
-  if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
-  const recent = db.transactions.find(t => t.userId === user.id && t.type === 'deposit' && Number(t.amount) === amt && t.method === (method||'otp') && (Date.now() - new Date(t.createdAt).getTime()) < 60000);
-  if (recent) return res.status(400).json({ error: 'Dépôt déjà soumis, veuillez patienter' });
-  // crédit immédiat au solde, mais en attente de confirmation admin (bloque l'achat de machine tant que non confirmé)
-  user.balance = (user.balance || 0) + amt;
-  const tx = { id: uid('tx'), userId: user.id, type: 'deposit', amount: amt, status: 'pending', method: method || 'otp', label: 'Dépôt', createdAt: new Date().toISOString() };
-  db.transactions.push(tx);
-  db.notifications.push({ id: uid('ntf'), userId: user.id, title: 'Dépôt soumis', text: `Votre dépôt de ${amt.toLocaleString('fr-FR')} FCFA a été ajouté à votre solde et est en attente de confirmation.`, type: 'wallet', read: false, createdAt: new Date().toISOString() });
-  writeDb(db);
-  res.json({ balance: user.balance, transaction: tx });
+app.post('/api/wallet/deposit', authRequired, async (req, res) => {
+  try {
+    const { amount, method, otp, merchantCode } = req.body || {};
+    const amt = Number(amount);
+    const db0 = readDb();
+    const s = getSettings(db0);
+    const min = Number(s.minDeposit || 0);
+    const max = Number(s.maxDeposit || 0);
+    if (!amt || amt <= 0) return res.status(400).json({ error: 'Montant invalide' });
+    if (min && amt < min) return res.status(400).json({ error: `Montant minimum ${min} FCFA` });
+    if (max && amt > max) return res.status(400).json({ error: `Montant maximum ${max} FCFA` });
+    if (method === 'otp' && !otp) return res.status(400).json({ error: 'Code OTP requis' });
+    if (method === 'marchand' && !merchantCode) return res.status(400).json({ error: 'Paiement marchand invalide' });
+
+    if (usingPostgres()) {
+      const pool = getPool();
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const uRes = await client.query('SELECT id,balance FROM users WHERE id=$1 FOR UPDATE', [req.user.id]);
+        if (!uRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Utilisateur introuvable' }); }
+        const recent = await client.query(`SELECT 1 FROM transactions WHERE user_id=$1 AND type='deposit' AND amount=$2 AND method=$3 AND created_at > NOW() - INTERVAL '60 seconds' LIMIT 1`, [req.user.id, amt, method || 'otp']);
+        if (recent.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Dépôt déjà soumis, veuillez patienter' }); }
+        await client.query('UPDATE users SET balance = balance + $1, updated_at=NOW() WHERE id=$2', [amt, req.user.id]);
+        const txId = uid('tx'); const nowIso = new Date().toISOString();
+        await client.query(`INSERT INTO transactions (id,user_id,type,amount,status,method,label,created_at,updated_at) VALUES ($1,$2,'deposit',$3,'pending',$4,'Dépôt',$5,NOW())`, [txId, req.user.id, amt, method || 'otp', nowIso]);
+        await client.query(`INSERT INTO notifications (id,user_id,title,text,type,read,created_at) VALUES ($1,$2,$3,$4,'wallet',false,$5)`, [uid('ntf'), req.user.id, 'Dépôt soumis', `Votre dépôt de ${amt.toLocaleString('fr-FR')} FCFA a été ajouté à votre solde et est en attente de confirmation.`, nowIso]);
+        await client.query('COMMIT');
+        try { await initDb(); } catch {}
+        const db = readDb();
+        const user = db.users.find(u => u.id === req.user.id);
+        const tx = (db.transactions || []).find(t => t.id === txId) || { id: txId, userId: req.user.id, type: 'deposit', amount: amt, status: 'pending', method: method || 'otp', label: 'Dépôt', createdAt: nowIso };
+        return res.json({ balance: user?.balance ?? 0, transaction: tx });
+      } catch (e) {
+        try { await client.query('ROLLBACK'); } catch {}
+        throw e;
+      } finally { client.release(); }
+    }
+
+    const db = readDb();
+    const user = db.users.find(u => u.id === req.user.id);
+    if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    const recent = db.transactions.find(t => t.userId === user.id && t.type === 'deposit' && Number(t.amount) === amt && t.method === (method||'otp') && (Date.now() - new Date(t.createdAt).getTime()) < 60000);
+    if (recent) return res.status(400).json({ error: 'Dépôt déjà soumis, veuillez patienter' });
+    user.balance = (user.balance || 0) + amt;
+    const tx = { id: uid('tx'), userId: user.id, type: 'deposit', amount: amt, status: 'pending', method: method || 'otp', label: 'Dépôt', createdAt: new Date().toISOString() };
+    db.transactions.push(tx);
+    db.notifications.push({ id: uid('ntf'), userId: user.id, title: 'Dépôt soumis', text: `Votre dépôt de ${amt.toLocaleString('fr-FR')} FCFA a été ajouté à votre solde et est en attente de confirmation.`, type: 'wallet', read: false, createdAt: new Date().toISOString() });
+    writeDb(db);
+    res.json({ balance: user.balance, transaction: tx });
+  } catch (e) {
+    console.error('deposit error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
-app.post('/api/wallet/withdraw', authRequired, (req, res) => {
-  const { amount, phone, beneficiary } = req.body || {};
-  const amt = Number(amount);
-  const db = readDb();
-  const s = getSettings(db);
-  const min = Number(s.minWithdraw ?? 1200);
-  const max = Number(s.maxWithdraw || 0);
-  const feePct = Number(s.withdrawFeePercent ?? 10);
-  if (!amt || amt < min) return res.status(400).json({ error: `Montant minimum ${min} FCFA` });
-  if (max && amt > max) return res.status(400).json({ error: `Montant maximum ${max} FCFA` });
-  if (!phone || !beneficiary) return res.status(400).json({ error: 'Numéro et nom du bénéficiaire requis' });
-  const user = db.users.find(u => u.id === req.user.id);
-  if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
-  if ((user.balance || 0) < amt) return res.status(400).json({ error: 'Solde insuffisant' });
-  const fee = Math.round(amt * (feePct / 100));
-  const received = Math.max(0, amt - fee);
-  const recent = db.transactions.find(t => t.userId === user.id && t.type === 'withdraw' && t.status === 'pending' && Number(t.amount) === amt && t.phone === phone && (Date.now() - new Date(t.createdAt).getTime()) < 60000);
-  if (recent) return res.status(400).json({ error: 'Demande de retrait déjà en cours de traitement' });
-  user.balance -= amt;
-  const tx = { id: uid('tx'), userId: user.id, type: 'withdraw', amount: amt, fee, received, status: 'pending', label: 'Retrait', phone, beneficiary, createdAt: new Date().toISOString() };
-  db.transactions.push(tx);
-  writeDb(db);
-  res.json({ balance: user.balance, transaction: tx });
+app.post('/api/wallet/withdraw', authRequired, async (req, res) => {
+  try {
+    const { amount, phone, beneficiary } = req.body || {};
+    const amt = Number(amount);
+    const db0 = readDb();
+    const s = getSettings(db0);
+    const min = Number(s.minWithdraw ?? 1200);
+    const max = Number(s.maxWithdraw || 0);
+    const feePct = Number(s.withdrawFeePercent ?? 10);
+    if (!amt || amt < min) return res.status(400).json({ error: `Montant minimum ${min} FCFA` });
+    if (max && amt > max) return res.status(400).json({ error: `Montant maximum ${max} FCFA` });
+    if (!phone || !beneficiary) return res.status(400).json({ error: 'Numéro et nom du bénéficiaire requis' });
+    const fee = Math.round(amt * (feePct / 100));
+    const received = Math.max(0, amt - fee);
+
+    if (usingPostgres()) {
+      const pool = getPool();
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const uRes = await client.query('SELECT id,balance FROM users WHERE id=$1 FOR UPDATE', [req.user.id]);
+        if (!uRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Utilisateur introuvable' }); }
+        const bal = Number(uRes.rows[0].balance || 0);
+        if (bal < amt) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Solde insuffisant' }); }
+        const recent = await client.query(`SELECT 1 FROM transactions WHERE user_id=$1 AND type='withdraw' AND status='pending' AND amount=$2 AND phone=$3 AND created_at > NOW() - INTERVAL '60 seconds' LIMIT 1`, [req.user.id, amt, phone]);
+        if (recent.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Demande de retrait déjà en cours de traitement' }); }
+        await client.query('UPDATE users SET balance = balance - $1, updated_at=NOW() WHERE id=$2', [amt, req.user.id]);
+        const txId = uid('tx'); const nowIso = new Date().toISOString();
+        await client.query(`INSERT INTO transactions (id,user_id,type,amount,fee,received,status,label,phone,beneficiary,created_at,updated_at) VALUES ($1,$2,'withdraw',$3,$4,$5,'pending','Retrait',$6,$7,$8,NOW())`, [txId, req.user.id, amt, fee, received, phone, beneficiary, nowIso]);
+        await client.query('COMMIT');
+        try { await initDb(); } catch {}
+        const db = readDb();
+        const user = db.users.find(u => u.id === req.user.id);
+        const tx = (db.transactions || []).find(t => t.id === txId) || { id: txId, userId: req.user.id, type: 'withdraw', amount: amt, fee, received, status: 'pending', label: 'Retrait', phone, beneficiary, createdAt: nowIso };
+        return res.json({ balance: user?.balance ?? 0, transaction: tx });
+      } catch (e) {
+        try { await client.query('ROLLBACK'); } catch {}
+        throw e;
+      } finally { client.release(); }
+    }
+
+    const db = readDb();
+    const user = db.users.find(u => u.id === req.user.id);
+    if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    if ((user.balance || 0) < amt) return res.status(400).json({ error: 'Solde insuffisant' });
+    const recent = db.transactions.find(t => t.userId === user.id && t.type === 'withdraw' && t.status === 'pending' && Number(t.amount) === amt && t.phone === phone && (Date.now() - new Date(t.createdAt).getTime()) < 60000);
+    if (recent) return res.status(400).json({ error: 'Demande de retrait déjà en cours de traitement' });
+    user.balance -= amt;
+    const tx = { id: uid('tx'), userId: user.id, type: 'withdraw', amount: amt, fee, received, status: 'pending', label: 'Retrait', phone, beneficiary, createdAt: new Date().toISOString() };
+    db.transactions.push(tx);
+    writeDb(db);
+    res.json({ balance: user.balance, transaction: tx });
+  } catch (e) {
+    console.error('withdraw error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
-app.post('/api/wallet/claim-daily', authRequired, (req, res) => {
-  const db = readDb();
-  const user = db.users.find(u => u.id === req.user.id);
-  if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
-  const today = new Date().toISOString().slice(0,10);
-  if (user.lastClaimDate === today) return res.status(400).json({ error: 'Bonus déjà réclamé aujourd’hui' });
-  user.lastClaimDate = today;
-  user.balance = (user.balance || 0) + 50;
-  const tx = { id: uid('tx'), userId: user.id, type: 'bonus', amount: 50, status: 'confirmed', label: 'Bonus quotidien', createdAt: new Date().toISOString() };
-  db.transactions.push(tx);
-  user.bonus = computeBonusTotal(db, user.id);
-  writeDb(db);
-  res.json({ balance: user.balance, bonus: user.bonus, transaction: tx });
+app.post('/api/wallet/claim-daily', authRequired, async (req, res) => {
+  try {
+    const today = new Date().toISOString().slice(0,10);
+    if (usingPostgres()) {
+      const pool = getPool();
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const uRes = await client.query('SELECT id, last_claim_date FROM users WHERE id=$1 FOR UPDATE', [req.user.id]);
+        if (!uRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Utilisateur introuvable' }); }
+        const lcd = uRes.rows[0].last_claim_date ? new Date(uRes.rows[0].last_claim_date).toISOString().slice(0,10) : null;
+        if (lcd === today) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Bonus déjà réclamé aujourd’hui' }); }
+        await client.query('UPDATE users SET last_claim_date=$1::date, balance = balance + 50, updated_at=NOW() WHERE id=$2', [today, req.user.id]);
+        const txId = uid('tx'); const nowIso = new Date().toISOString();
+        await client.query(`INSERT INTO transactions (id,user_id,type,amount,status,label,created_at,updated_at) VALUES ($1,$2,'bonus',50,'confirmed','Bonus quotidien',$3,NOW())`, [txId, req.user.id, nowIso]);
+        await client.query('COMMIT');
+        try { await initDb(); } catch {}
+        const db = readDb();
+        const user = db.users.find(u => u.id === req.user.id);
+        const tx = (db.transactions || []).find(t => t.id === txId) || { id: txId, userId: req.user.id, type: 'bonus', amount: 50, status: 'confirmed', label: 'Bonus quotidien', createdAt: nowIso };
+        return res.json({ balance: user?.balance ?? 0, bonus: computeBonusTotal(db, req.user.id), transaction: tx });
+      } catch (e) {
+        try { await client.query('ROLLBACK'); } catch {}
+        throw e;
+      } finally { client.release(); }
+    }
+
+    const db = readDb();
+    const user = db.users.find(u => u.id === req.user.id);
+    if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    if (user.lastClaimDate === today) return res.status(400).json({ error: 'Bonus déjà réclamé aujourd’hui' });
+    user.lastClaimDate = today;
+    user.balance = (user.balance || 0) + 50;
+    const tx = { id: uid('tx'), userId: user.id, type: 'bonus', amount: 50, status: 'confirmed', label: 'Bonus quotidien', createdAt: new Date().toISOString() };
+    db.transactions.push(tx);
+    user.bonus = computeBonusTotal(db, user.id);
+    writeDb(db);
+    res.json({ balance: user.balance, bonus: user.bonus, transaction: tx });
+  } catch (e) {
+    console.error('claim-daily error', e);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
 
