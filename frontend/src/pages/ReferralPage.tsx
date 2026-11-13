@@ -3,12 +3,13 @@ import { Copy, Share2, Users, Award } from 'lucide-react';
 import { TopBar } from '../components/TopBar';
 import { api } from '../api/client';
 
+type RefMember = { id: string; memberId?: string; username?: string; phone?: string; createdAt?: string; vipLevel?: number };
 type RefData = {
   code: string;
   link: string;
   totalEarned?: number;
   inviteBonus?: { directCount: number; awarded: number; target: number; tiers: {count:number;total:number}[] };
-  levels: { level: number; count: number; commission: number; rate?: number }[];
+  levels: { level: number; count: number; commission: number; rate?: number; members?: RefMember[] }[];
   teams: { name: string; count: number }[];
 };
 
@@ -30,7 +31,8 @@ export function ReferralPage() {
   const gains = data?.totalEarned ?? (data?.levels.reduce((s,l)=>s+(l.commission||0),0) || 0);
   const counts = { A: data?.levels[0]?.count || 0, B: data?.levels[1]?.count || 0, C: data?.levels[2]?.count || 0 };
   const rates = { A: data?.levels[0]?.rate ?? 27, B: data?.levels[1]?.rate ?? 3, C: data?.levels[2]?.rate ?? 1 };
-  const list: any[] = [];
+  const idx = tab === 'A' ? 0 : tab === 'B' ? 1 : 2;
+  const list = data?.levels?.[idx]?.members || [];
   const directCount = data?.inviteBonus?.directCount ?? counts.A;
 
   return (
@@ -111,13 +113,13 @@ export function ReferralPage() {
             ) : list.map(m => (
               <div key={m.id} className="card member">
                 <div className="mleft">
-                  <div className="av">{m.nom.charAt(0)}</div>
+                  <div className="av">{(m.username || 'U').trim().charAt(0).toUpperCase()}</div>
                   <div>
-                    <p className="mname">{m.nom}</p>
-                    <p className="mmeta">{m.numero} • Inscrit le {m.date}</p>
+                    <p className="mname">{m.username || 'Utilisateur'}</p>
+                    <p className="mmeta">ID {m.memberId || '-'} • {m.phone || '-'}{m.createdAt ? ` • Inscrit le ${new Date(m.createdAt).toLocaleDateString('fr-FR')}` : ''}</p>
                   </div>
                 </div>
-                <div>{m.actif ? <span className="vip-badge"><Award size={10}/> <span className="vip-gold">VIP</span></span> : <span className="inactive">Inactif</span>}</div>
+                <div><span className="vip-badge"><Award size={10}/> <span className="vip-gold">VIP {m.vipLevel ?? 1}</span></span></div>
               </div>
             ))}
           </div>

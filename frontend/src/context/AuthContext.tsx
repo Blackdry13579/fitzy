@@ -10,6 +10,7 @@ export type User = {
   inviteCode: string;
   balance: number;
   bonus: number;
+  vipLevel?: number;
   onboardingDone?: boolean;
 };
 

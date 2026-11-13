@@ -42,6 +42,17 @@ function getMachines(db) {
   return db.machines;
 }
 
+function getUserVipLevel(db, userId) {
+  const ms = getMachines(db);
+  const purchases = (db.purchases || []).filter(p => p.userId === userId);
+  let maxVip = 0;
+  for (const p of purchases) {
+    const idx = ms.findIndex(m => m.id === p.machineId);
+    if (idx >= 0) maxVip = Math.max(maxVip, idx + 1);
+  }
+  return maxVip || 1; // VIP 1 par défaut, ne descend jamais (max des achats)
+}
+
 function publicUser(u) {
   const { passwordHash, ...rest } = u;
   return rest;
@@ -119,6 +130,7 @@ function ensureUserShape(u, db) {
   }
   const bonusTotal = db ? computeBonusTotal(db, u.id) : (u.bonus ?? 0);
   if (db) u.bonus = bonusTotal;
+  const vipLevel = db ? getUserVipLevel(db, u.id) : (u.vipLevel ?? 1);
   return {
     id: u.id,
     memberId: u.memberId || '',
@@ -129,6 +141,7 @@ function ensureUserShape(u, db) {
     referredBy: u.referredBy || null,
     balance: u.balance ?? 0,
     bonus: bonusTotal,
+    vipLevel,
     createdAt: u.createdAt,
   };
 }
@@ -153,15 +166,23 @@ function calcReferral(db, userId) {
   const directCount = direct.length;
   let inviteBonusTarget = 0;
   for (const t of tiers) if (directCount >= t.count) inviteBonusTarget = t.total;
+  const memberInfo = (u) => ({
+    id: u.id,
+    memberId: u.memberId || '',
+    username: u.username || 'Utilisateur',
+    phone: u.phone || '',
+    createdAt: u.createdAt || '',
+    vipLevel: getUserVipLevel(db, u.id),
+  });
   return {
     code: db.users.find(u=>u.id===userId)?.inviteCode,
     link: `https://fitzone.app/invite/${db.users.find(u=>u.id===userId)?.inviteCode || ''}`,
     totalEarned,
     inviteBonus: { directCount, awarded: db.users.find(u=>u.id===userId)?.inviteBonusAwarded || 0, target: inviteBonusTarget, tiers },
     levels: [
-      { level: 1, count: direct.length, commission: earnedForLevel(1), rate: ratesPct[0] },
-      { level: 2, count: level2.length, commission: earnedForLevel(2), rate: ratesPct[1] },
-      { level: 3, count: level3.length, commission: earnedForLevel(3), rate: ratesPct[2] },
+      { level: 1, count: direct.length, commission: earnedForLevel(1), rate: ratesPct[0], members: direct.map(memberInfo) },
+      { level: 2, count: level2.length, commission: earnedForLevel(2), rate: ratesPct[1], members: level2.map(memberInfo) },
+      { level: 3, count: level3.length, commission: earnedForLevel(3), rate: ratesPct[2], members: level3.map(memberInfo) },
     ],
     teams: [
       { name: 'Équipe A', count: direct.length },
