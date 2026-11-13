@@ -328,8 +328,17 @@ export function writeDb(db) {
   memoryDb = db;
   if (getPool()) {
     // persist to app_state and also sync to relational tables (progressive migration)
-    persistToPg(db).catch((err) => console.error('DB persist error:', err?.message || err));
-    persistRelational(db).catch((err) => console.error('Relational persist error:', err?.message || err));
+    const onErr = (label) => (err) => {
+      const msg = err?.message || String(err);
+      console.error(`${label}:`, msg);
+      try { if (memoryDb && typeof memoryDb === 'object') memoryDb._lastPersistError = { label, msg, at: new Date().toISOString() }; } catch {}
+    };
+    persistToPg(db).then(() => {
+      try { if (memoryDb && typeof memoryDb === 'object' && memoryDb._lastPersistError?.label === 'DB persist error') delete memoryDb._lastPersistError; } catch {}
+    }).catch(onErr('DB persist error'));
+    persistRelational(db).then(() => {
+      try { if (memoryDb && typeof memoryDb === 'object' && memoryDb._lastPersistError?.label === 'Relational persist error') delete memoryDb._lastPersistError; } catch {}
+    }).catch(onErr('Relational persist error'));
   } else {
     writeDbFile(db);
   }

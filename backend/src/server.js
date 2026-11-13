@@ -920,7 +920,8 @@ app.post('/api/notifications/read-all', authRequired, async (req, res) => {
   try {
     if (usingPostgres()) {
       await pgDb.markAllNotificationsRead(req.user.id);
-      try { await initDb(); } catch {}
+      const db = readDb();
+      if (Array.isArray(db?.notifications)) db.notifications.forEach(n => { if (n.userId === req.user.id) n.read = true; });
       return res.json({ ok: true });
     }
     const db = readDb();
@@ -937,7 +938,9 @@ app.post('/api/notifications/:id/read', authRequired, async (req, res) => {
     if (usingPostgres()) {
       const ok = await pgDb.markNotificationRead(req.user.id, req.params.id);
       if (!ok) return res.status(404).json({ error: 'Notification introuvable' });
-      try { await initDb(); } catch {}
+      const db = readDb();
+      const n = (db?.notifications || []).find(x => x.id === req.params.id && x.userId === req.user.id);
+      if (n) n.read = true;
       return res.json({ ok: true });
     }
     const db = readDb();
