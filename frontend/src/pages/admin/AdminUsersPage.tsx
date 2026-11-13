@@ -30,7 +30,7 @@ export function AdminUsersPage() {
     const s=q.toLowerCase(); if(!s) return true;
     return [u.username,u.phone,u.memberId,u.country,u.inviteCode,u.id].some(v=>String(v||'').toLowerCase().includes(s));
   }), [items,q]);
-  const onExport = () => exportCsv('utilisateurs.csv', filtered.map(u=>({memberId:u.memberId||'',username:u.username||'',phone:u.phone||'',country:u.country||'',balance:u.balance||0,bonus:u.bonus||0,inviteCode:u.inviteCode||''})), [{k:'memberId',l:'ID membre'},{k:'username',l:'Utilisateur'},{k:'phone',l:'Téléphone'},{k:'country',l:'Pays'},{k:'balance',l:'Solde'},{k:'bonus',l:'Bonus'},{k:'inviteCode',l:'Code invite'}]);
+  const onExport = () => exportCsv('utilisateurs.csv', filtered.map(u=>({createdAt:u.createdAt?new Date(u.createdAt).toLocaleString('fr-FR'):'',memberId:u.memberId||'',username:u.username||'',phone:u.phone||'',country:u.country||'',balance:u.balance||0,bonus:u.bonus||0,inviteCode:u.inviteCode||''})), [{k:'createdAt',l:"Date d'inscription"},{k:'memberId',l:'ID membre'},{k:'username',l:'Utilisateur'},{k:'phone',l:'Téléphone'},{k:'country',l:'Pays'},{k:'balance',l:'Solde'},{k:'bonus',l:'Bonus'},{k:'inviteCode',l:'Code invite'}]);
 
   const dstats = useMemo(() => {
     if (!detail) return null;
@@ -50,11 +50,11 @@ export function AdminUsersPage() {
       {error && <p className="err">{error}</p>}
       {loading ? <p>Chargement...</p> : (
         <div className="table-wrap card"><table>
-          <thead><tr><th>ID membre</th><th>Utilisateur</th><th>Téléphone</th><th>Pays</th><th>Solde actuel</th><th>Bonus</th><th>Code invite</th><th>Parrain</th><th>Détail</th></tr></thead>
+          <thead><tr><th>Date d'inscription</th><th>ID membre</th><th>Téléphone</th><th>Pays</th><th>Solde actuel</th><th>Bonus</th><th>Code invite</th><th>Parrain</th><th>Détail</th></tr></thead>
           <tbody>{filtered.map(u=>(
             <tr key={u.id}>
+              <td className="date">{u.createdAt ? new Date(u.createdAt).toLocaleString('fr-FR') : '-'}</td>
               <td><span className="pill">{u.memberId||'-'}</span></td>
-              <td><strong>{u.username||'Utilisateur'}</strong></td>
               <td>{u.phone}</td>
               <td>{u.country||'-'}</td>
               <td className="amt">{fmt(u.balance)} F</td>
@@ -121,6 +121,7 @@ export function AdminUsersPage() {
         th{background:linear-gradient(180deg,#f8fafc,#dbeafe);color:#334155;font-size:12px;text-transform:uppercase;letter-spacing:.02em}
         tr:hover td{background:#f8fbff}
         .amt{color:#1d4ed8;font-weight:700}
+        .date{white-space:nowrap;color:#334155;font-size:12px}
         .pill{background:#e0e7ff;color:#3730a3;padding:4px 8px;border-radius:8px;font-weight:700;font-size:12px}
         .tag{padding:4px 8px;border-radius:999px;font-size:12px;font-weight:700}
         .tag.ok{background:#dcfce7;color:#166534}.tag.muted{background:#f1f5f9;color:#64748b}
