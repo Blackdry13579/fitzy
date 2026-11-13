@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { NoticeModal } from '../components/Modal';
 
 const countries = [
   { code: 'BF', name: 'Burkina Faso', dial: '+226', length: 8, example: '05030505', flag: 'https://flagcdn.com/w40/bf.png' },
@@ -22,6 +23,7 @@ export function RegisterPage() {
   useEffect(() => { if (code) setInviteCode(String(code).toUpperCase()); }, [code]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [success, setSuccess] = useState(false);
   const selected = countries.find((c) => c.code === country) ?? countries[0];
   const dial = selected.dial;
   const phoneDigits = phone.replace(/\D/g, '');
@@ -49,7 +51,7 @@ export function RegisterPage() {
     try {
       const fullPhone = `${dial}${phoneDigits}`;
       await register({ phone: fullPhone, password, inviteCode: inviteCode.trim(), country });
-      navigate('/');
+      setSuccess(true);
     } catch (err: any) {
       setError(err.message || 'Inscription échouée');
     } finally {
@@ -121,6 +123,13 @@ export function RegisterPage() {
           </form>
         </div>
       </div>
+      <NoticeModal
+        open={success}
+        title="Inscription réussie"
+        message="Bienvenue sur FITZONE ! Votre bonus d'inscription de 600 FCFA a été ajouté à votre solde."
+        type="success"
+        onClose={() => { setSuccess(false); navigate('/'); }}
+      />
       <style>{`
         .auth-screen { background: #fff; min-height: 100vh; }
         .hero { position:relative; overflow:hidden; height: 220px; background: url('https://i.pinimg.com/736x/b9/ca/e2/b9cae2853ae3d51a1be64b4b5f24ea01.jpg') center/cover no-repeat; }
