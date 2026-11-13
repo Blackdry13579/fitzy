@@ -106,10 +106,19 @@ function generateInviteCode(db) {
   return code;
 }
 
+function computeBonusTotal(db, userId) {
+  const txs = (db && db.transactions) || [];
+  return Math.round(txs
+    .filter(t => t.userId === userId && t.status === 'confirmed' && (t.type === 'bonus' || t.type === 'commission'))
+    .reduce((s, t) => s + Number(t.amount || 0), 0));
+}
+
 function ensureUserShape(u, db) {
   if (db && !u.memberId) {
     u.memberId = generateMemberId(db);
   }
+  const bonusTotal = db ? computeBonusTotal(db, u.id) : (u.bonus ?? 0);
+  if (db) u.bonus = bonusTotal;
   return {
     id: u.id,
     memberId: u.memberId || '',
@@ -119,7 +128,7 @@ function ensureUserShape(u, db) {
     inviteCode: u.inviteCode,
     referredBy: u.referredBy || null,
     balance: u.balance ?? 0,
-    bonus: u.bonus ?? 0,
+    bonus: bonusTotal,
     createdAt: u.createdAt,
   };
 }
@@ -190,7 +199,17 @@ function creditReferralCommissionsForPurchase(db, purchase, buyer) {
           label: `Commission parrainage N${level}`,
           createdAt: new Date().toISOString(),
         });
-        db.notifications.push({ id: uid('ntf'), userId: refUser.id, title: 'Commission reçue', text: `Vous avez reçu ${amount.toLocaleString('fr-FR')} FCFA de commission (niveau ${level}).`, type: 'wallet', read: false, createdAt: new Date().toISOString() });
+        refUser.bonus = computeBonusTotal(db, refUser.id);
+        const pct = Math.round(rates[level - 1] * 100);
+        db.notifications.push({
+          id: uid('ntf'),
+          userId: refUser.id,
+          title: 'Commission reçue',
+          text: `Une personne que vous avez invitée (niveau ${level}, ${pct}%) a acheté une machine. Vous recevez ${amount.toLocaleString('fr-FR')} FCFA, ajoutés à votre solde.`,
+          type: 'wallet',
+          read: false,
+          createdAt: new Date().toISOString(),
+        });
       }
     }
     refId = refUser.referredBy || null;
@@ -218,6 +237,7 @@ function awardInviteMilestones(db, referrerId) {
     ref.balance = (ref.balance || 0) + delta;
     ref.inviteBonusAwarded = target;
     db.transactions.push({ id: uid('tx'), userId: ref.id, type: 'bonus', amount: delta, status: 'confirmed', label: `Bonus invitation (${directCount} invités)`, createdAt: new Date().toISOString() });
+    ref.bonus = computeBonusTotal(db, ref.id);
     db.notifications.push({ id: uid('ntf'), userId: ref.id, title: 'Bonus d’invitation', text: `Félicitations ! Vous avez atteint ${directCount} invités et reçu ${delta.toLocaleString('fr-FR')} FCFA (total ${target.toLocaleString('fr-FR')} FCFA).`, type: 'wallet', read: false, createdAt: new Date().toISOString() });
   }
 }
@@ -266,6 +286,7 @@ app.post('/api/auth/register', async (req, res) => {
   };
   db.users.push(user);
   db.transactions.push({ id: uid('tx'), userId: user.id, type: 'bonus', amount: 600, status: 'confirmed', label: "Bonus d'inscription", createdAt: new Date().toISOString() });
+  user.bonus = computeBonusTotal(db, user.id);
   db.notifications.push({ id: uid('ntf'), userId: user.id, title: 'Bienvenue sur FITZONE', text: 'Votre compte a été créé avec succès. Bonus d’inscription de 600 FCFA ajouté à votre solde.', type: 'info', read: false, createdAt: new Date().toISOString() });
   if (referrer) awardInviteMilestones(db, referrer.id);
   writeDb(db);
@@ -314,7 +335,7 @@ app.get('/api/wallet', authRequired, (req, res) => {
   const db = readDb();
   const user = db.users.find(u => u.id === req.user.id);
   const tx = db.transactions.filter(t => t.userId === req.user.id).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
-  res.json({ balance: user?.balance ?? 0, bonus: user?.bonus ?? 0, transactions: tx });
+  res.json({ balance: user?.balance ?? 0, bonus: computeBonusTotal(db, req.user.id), transactions: tx });
 });
 
 app.post('/api/wallet/deposit', authRequired, (req, res) => {
@@ -376,8 +397,9 @@ app.post('/api/wallet/claim-daily', authRequired, (req, res) => {
   user.balance = (user.balance || 0) + 50;
   const tx = { id: uid('tx'), userId: user.id, type: 'bonus', amount: 50, status: 'confirmed', label: 'Bonus quotidien', createdAt: new Date().toISOString() };
   db.transactions.push(tx);
+  user.bonus = computeBonusTotal(db, user.id);
   writeDb(db);
-  res.json({ balance: user.balance, transaction: tx });
+  res.json({ balance: user.balance, bonus: user.bonus, transaction: tx });
 });
 
 // Purchases / mes produits
@@ -771,7 +793,7 @@ app.get('/api/admin/referrals/tree', adminRequired, (req, res) => {
   res.json(roots);
 });
 
-export { app, calcReferral, creditReferralCommissionsForPurchase, getSettings, generateInviteCode, awardInviteMilestones };
+export { app, calcReferral, creditReferralCommissionsForPurchase, getSettings, generateInviteCode, awardInviteMilestones, computeBonusTotal };
 
 const port = process.env.PORT || 4000;
 const isDirectRun = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;

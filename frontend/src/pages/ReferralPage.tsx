@@ -57,7 +57,7 @@ export function ReferralPage() {
               <button onClick={() => copy(link || code)}><Copy size={16} /></button>
             </div>
           </div>
-          <button className="btn-copy" onClick={() => copy(link || code)}><Share2 size={16} /> Partager / Copier le lien</button>
+          <button className="btn-copy" onClick={() => copy(link || code)}><Copy size={16} /> Copier le lien</button>
         </div>
 
         <div className="card bonus-card">

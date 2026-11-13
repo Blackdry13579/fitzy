@@ -21,6 +21,7 @@ export function HomePage() {
   const [machines, setMachines] = useState<Machine[]>(localMachines as Machine[]);
   const [notice, setNotice] = useState<{title?:string; message:string; type:'success'|'error'|'info'} | null>(null);
   const [inviteBonus, setInviteBonus] = useState<InviteBonus | null>(null);
+  const [notifPopup, setNotifPopup] = useState<{title:string; message:string} | null>(null);
 
   useEffect(() => {
     api<Machine[]>('/machines').then((data) => {
@@ -33,6 +34,13 @@ export function HomePage() {
     api<{ inviteBonus?: InviteBonus; levels?: {count:number}[] }>('/referral').then((d) => {
       if (d?.inviteBonus) setInviteBonus(d.inviteBonus);
       else setInviteBonus({ directCount: d?.levels?.[0]?.count || 0, awarded: 0, target: 0, tiers: defaultInviteTiers.map(t=>({count:t.count,total:t.total})) });
+    }).catch(() => {});
+    api<any[]>('/notifications').then((list) => {
+      const unread = (Array.isArray(list)?list:[]).filter(n => !n.read && (n.title === 'Commission reçue' || n.type === 'wallet' || n.type === 'bonus'));
+      if (unread.length) {
+        const n = unread[0];
+        setNotifPopup({ title: n.title || 'Notification', message: unread.length > 1 ? `${n.text} (+${unread.length-1} autre(s) notification(s))` : n.text });
+      }
     }).catch(() => {});
   }, [user]);
 
@@ -204,6 +212,7 @@ export function HomePage() {
         </section>
       </div>
       <NoticeModal open={!!notice} title={notice?.title} message={notice?.message||''} type={notice?.type} onClose={()=>setNotice(null)} />
+      <NoticeModal open={!!notifPopup} title={notifPopup?.title} message={notifPopup?.message||''} type="success" onClose={()=>setNotifPopup(null)} />
 
       <style>{`
         .screen { background: #fff; min-height: 100%; }

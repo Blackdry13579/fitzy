@@ -1,5 +1,5 @@
 import { Link, useNavigate } from 'react-router-dom';
-import { Share2, Shield, LogOut } from 'lucide-react';
+import { Copy, Shield, LogOut } from 'lucide-react';
 import { TopBar } from '../components/TopBar';
 import { useAuth } from '../context/AuthContext';
 
@@ -29,7 +29,7 @@ export function ProfilePage() {
               <div className="code-pill">
                 <span>Mon code d'invitation</span>
                 <strong>{inviteCode}</strong>
-                <button onClick={() => copy(link)}><Share2 size={14} /> Partager mon lien</button>
+                <button onClick={() => copy(link)}><Copy size={14} /> Copier le lien</button>
               </div>
             </div>
           </div>
