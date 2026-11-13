@@ -69,9 +69,9 @@ export function AdminSettingsPage() {
         label{display:grid;gap:6px;font-size:13px;font-weight:600;color:#334155}
         .wide{grid-column:1 / -1}
         input{height:44px;border:1px solid #cbd5e1;border-radius:10px;padding:0 12px;font-size:14px;width:100%}
-        .pass-wrap{position:relative;display:flex;align-items:center}
+        .pass-wrap{position:relative}
         .pass-wrap input{padding-right:44px}
-        .eye-btn{position:absolute;right:8px;width:32px;height:32px;border:none;background:transparent;color:#64748b;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;border-radius:8px}
+        .eye-btn{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:32px;height:32px;border:none;background:transparent;color:#64748b;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;border-radius:8px}
         .eye-btn:hover{background:#f1f5f9;color:#1d4ed8}
         .actions{display:flex;justify-content:flex-end;margin-top:14px}
         .primary{height:42px;padding:0 16px;border:none;border-radius:12px;background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff;font-weight:700;cursor:pointer}

@@ -130,9 +130,9 @@ export function LoginPage() {
         .hint{margin:-4px 0 0;font-size:12px;color:#475569}
         .input { height: 48px; border: 1px solid #cbd5e1; border-radius: 12px; padding: 0 12px; font-size: 14px; width: 100%; background: #fff; }
         .input:focus{outline:none;border-color:#1d4ed8;box-shadow:0 0 0 3px rgba(30,64,175,.14)}
-        .pass-wrap{position:relative;display:flex;align-items:center}
-        .pass-wrap .input{padding-right:44px}
-        .eye-btn{position:absolute;right:8px;width:34px;height:34px;border:none;background:transparent;color:#64748b;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;border-radius:8px}
+        .pass-wrap{position:relative}
+        .pass-wrap .input{padding-right:46px}
+        .eye-btn{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:34px;height:34px;border:none;background:transparent;color:#64748b;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;border-radius:8px}
         .eye-btn:hover{background:#f1f5f9;color:#1d4ed8}
         .country-select{position:relative;display:flex;align-items:center}
         .flag{position:absolute;left:10px;width:22px;height:16px;object-fit:cover;border-radius:3px;box-shadow:0 1px 3px rgba(0,0,0,.2)}
