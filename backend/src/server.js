@@ -1225,48 +1225,121 @@ app.get('/api/admin/audit', adminRequired, async (_req, res) => {
   }
 });
 
-app.get('/api/admin/referrals', adminRequired, (_req, res) => {
-  const db = readDb();
-  const list = db.users.map(u => {
-    const r = calcReferral(db, u.id);
-    const totalCommission = r.levels.reduce((s,l)=>s+l.commission,0);
-    const totalTeam = r.levels.reduce((s,l)=>s+l.count,0);
-    const direct = db.users.filter(x => x.referredBy === u.id).map(x => ({ id:x.id, memberId:x.memberId, phone:x.phone, username:x.username }));
-    const referrer = u.referredBy ? (()=>{ const p=db.users.find(x=>x.id===u.referredBy); return p?{id:p.id,memberId:p.memberId,phone:p.phone,username:p.username}:null; })() : null;
-    return { id: u.id, memberId: u.memberId, phone: u.phone, username: u.username, inviteCode: u.inviteCode, totalTeam, totalCommission, levels: r.levels, directReferrals: direct, referrer };
-  }).sort((a,b)=>b.totalCommission-a.totalCommission || b.totalTeam-a.totalTeam);
-  res.json(list);
+app.get('/api/admin/referrals', adminRequired, async (_req, res) => {
+  try {
+    if (usingPostgres()) {
+      const users = await pgDb.getAllUsers();
+      const list = await Promise.all(users.map(async (u) => {
+        const data = await pgDb.getReferralData(u.id);
+        const r = data ? {
+          code: u.inviteCode,
+          levels: [
+            { level: 1, count: data.levelsUsers[0].length, commission: Math.round(data.commissions[0] || 0) },
+            { level: 2, count: data.levelsUsers[1].length, commission: Math.round(data.commissions[1] || 0) },
+            { level: 3, count: data.levelsUsers[2].length, commission: Math.round(data.commissions[2] || 0) },
+          ]
+        } : { levels: [{commission:0,count:0},{commission:0,count:0},{commission:0,count:0}] };
+        const totalCommission = r.levels.reduce((s,l)=>s+l.commission,0);
+        const totalTeam = r.levels.reduce((s,l)=>s+l.count,0);
+        const directUsers = data ? data.levelsUsers[0] : [];
+        const direct = directUsers.map(x => ({ id:x.id, memberId:x.memberId, phone:x.phone, username:x.username }));
+        const ref = u.referredBy ? users.find(x => x.id === u.referredBy) : null;
+        const referrer = ref ? { id: ref.id, memberId: ref.memberId, phone: ref.phone, username: ref.username } : null;
+        return { id: u.id, memberId: u.memberId, phone: u.phone, username: u.username, inviteCode: u.inviteCode, totalTeam, totalCommission, levels: r.levels, directReferrals: direct, referrer };
+      }));
+      list.sort((a,b)=>b.totalCommission-a.totalCommission || b.totalTeam-a.totalTeam);
+      return res.json(list);
+    }
+    const db = readDb();
+    const list = db.users.map(u => {
+      const r = calcReferral(db, u.id);
+      const totalCommission = r.levels.reduce((s,l)=>s+l.commission,0);
+      const totalTeam = r.levels.reduce((s,l)=>s+l.count,0);
+      const direct = db.users.filter(x => x.referredBy === u.id).map(x => ({ id:x.id, memberId:x.memberId, phone:x.phone, username:x.username }));
+      const referrer = u.referredBy ? (()=>{ const p=db.users.find(x=>x.id===u.referredBy); return p?{id:p.id,memberId:p.memberId,phone:p.phone,username:p.username}:null; })() : null;
+      return { id: u.id, memberId: u.memberId, phone: u.phone, username: u.username, inviteCode: u.inviteCode, totalTeam, totalCommission, levels: r.levels, directReferrals: direct, referrer };
+    }).sort((a,b)=>b.totalCommission-a.totalCommission || b.totalTeam-a.totalTeam);
+    res.json(list);
+  } catch (e) { console.error('admin referrals error', e); res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
-app.get('/api/admin/users', adminRequired, (_req, res) => {
-  const db = readDb();
-  res.json(db.users.map(u => adminPublicUser(db, u)));
-  writeDb(db);
+app.get('/api/admin/users', adminRequired, async (_req, res) => {
+  try {
+    if (usingPostgres()) {
+      const users = await pgDb.getAllUsers();
+      const [bonusMap, vipMap] = await Promise.all([pgDb.getBonusTotalsMap(), pgDb.getVipLevelsMap()]);
+      return res.json(users.map(u => {
+        const { passwordHash, ...rest } = u;
+        const bonus = bonusMap.get(u.id) ?? Math.round(Number(u.bonusTotal ?? u.bonus ?? 0));
+        const vipLevel = vipMap.get(u.id) ?? Number(u.vipLevel || 0);
+        return { ...rest, bonus, vipLevel };
+      }));
+    }
+    const db = readDb();
+    res.json(db.users.map(u => adminPublicUser(db, u)));
+    writeDb(db);
+  } catch (e) { console.error('admin users error', e); res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
-app.get('/api/admin/transactions', adminRequired, (req, res) => {
-  const db = readDb();
-  const { type, status } = req.query || {};
-  let list = [...db.transactions];
-  if (type) list = list.filter(t => t.type === type);
-  if (status) list = list.filter(t => t.status === status);
-  const enriched = list.map(t => {
-    const u = db.users.find(x=>x.id===t.userId);
-    const referrer = u?.referredBy ? db.users.find(x=>x.id===u.referredBy) : null;
-    return { ...t, user: u ? adminPublicUser(db, u) : { id: t.userId }, referrer: referrer ? adminPublicUser(db, referrer) : null };
-  });
-  res.json(enriched.sort((a,b)=> (b.createdAt||'').localeCompare(a.createdAt||'')));
+app.get('/api/admin/transactions', adminRequired, async (req, res) => {
+  try {
+    const { type, status } = req.query || {};
+    if (usingPostgres()) {
+      const [list, users] = await Promise.all([pgDb.getAllTransactions({ type, status }), pgDb.getAllUsers()]);
+      const [bonusMap, vipMap] = await Promise.all([pgDb.getBonusTotalsMap(), pgDb.getVipLevelsMap()]);
+      const byId = new Map(users.map(u => [u.id, u]));
+      const shape = (u) => {
+        if (!u) return null;
+        const { passwordHash, ...rest } = u;
+        return { ...rest, bonus: bonusMap.get(u.id) ?? Math.round(Number(u.bonusTotal ?? u.bonus ?? 0)), vipLevel: vipMap.get(u.id) ?? Number(u.vipLevel || 0) };
+      };
+      const enriched = list.map(t => {
+        const u = byId.get(t.userId);
+        const ref = u?.referredBy ? byId.get(u.referredBy) : null;
+        return { ...t, user: u ? shape(u) : { id: t.userId }, referrer: ref ? shape(ref) : null };
+      });
+      return res.json(enriched.sort((a,b)=> (b.createdAt||'').localeCompare(a.createdAt||'')));
+    }
+    const db = readDb();
+    let list = [...db.transactions];
+    if (type) list = list.filter(t => t.type === type);
+    if (status) list = list.filter(t => t.status === status);
+    const enriched = list.map(t => {
+      const u = db.users.find(x=>x.id===t.userId);
+      const referrer = u?.referredBy ? db.users.find(x=>x.id===u.referredBy) : null;
+      return { ...t, user: u ? adminPublicUser(db, u) : { id: t.userId }, referrer: referrer ? adminPublicUser(db, referrer) : null };
+    });
+    res.json(enriched.sort((a,b)=> (b.createdAt||'').localeCompare(a.createdAt||'')));
+  } catch (e) { console.error('admin transactions error', e); res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
-app.get('/api/admin/purchases', adminRequired, (_req, res) => {
-  const db = readDb();
-  const ms = getMachines(db);
-  const list = db.purchases.map(p => {
-    const u = db.users.find(x=>x.id===p.userId);
-    const referrer = u?.referredBy ? db.users.find(x=>x.id===u.referredBy) : null;
-    return { ...p, machine: ms.find(m => m.id === p.machineId) || null, user: u ? adminPublicUser(db, u) : { id: p.userId }, referrer: referrer ? adminPublicUser(db, referrer) : null };
-  });
-  res.json(list.sort((a,b)=> (b.createdAt||'').localeCompare(a.createdAt||'')));
+app.get('/api/admin/purchases', adminRequired, async (_req, res) => {
+  try {
+    if (usingPostgres()) {
+      const [purchases, users, ms] = await Promise.all([pgDb.getAllPurchases(), pgDb.getAllUsers(), pgDb.getMachines()]);
+      const [bonusMap, vipMap] = await Promise.all([pgDb.getBonusTotalsMap(), pgDb.getVipLevelsMap()]);
+      const byId = new Map(users.map(u => [u.id, u]));
+      const shape = (u) => {
+        if (!u) return null;
+        const { passwordHash, ...rest } = u;
+        return { ...rest, bonus: bonusMap.get(u.id) ?? Math.round(Number(u.bonusTotal ?? u.bonus ?? 0)), vipLevel: vipMap.get(u.id) ?? Number(u.vipLevel || 0) };
+      };
+      const list = purchases.map(p => {
+        const u = byId.get(p.userId);
+        const ref = u?.referredBy ? byId.get(u.referredBy) : null;
+        return { ...p, machine: ms.find(m => m.id === p.machineId) || null, user: u ? shape(u) : { id: p.userId }, referrer: ref ? shape(ref) : null };
+      });
+      return res.json(list.sort((a,b)=> (b.createdAt||'').localeCompare(a.createdAt||'')));
+    }
+    const db = readDb();
+    const ms = getMachines(db);
+    const list = db.purchases.map(p => {
+      const u = db.users.find(x=>x.id===p.userId);
+      const referrer = u?.referredBy ? db.users.find(x=>x.id===u.referredBy) : null;
+      return { ...p, machine: ms.find(m => m.id === p.machineId) || null, user: u ? adminPublicUser(db, u) : { id: p.userId }, referrer: referrer ? adminPublicUser(db, referrer) : null };
+    });
+    res.json(list.sort((a,b)=> (b.createdAt||'').localeCompare(a.createdAt||'')));
+  } catch (e) { console.error('admin purchases error', e); res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
 app.patch('/api/admin/transactions/:id', adminRequired, async (req, res) => {
@@ -1322,26 +1395,92 @@ app.patch('/api/admin/transactions/:id', adminRequired, async (req, res) => {
   }
 });
 
-app.get('/api/admin/transactions/:id', adminRequired, (req, res) => {
-  const db = readDb();
-  const tx = db.transactions.find(t => t.id === req.params.id);
-  if (!tx) return res.status(404).json({ error: 'Transaction introuvable' });
-  const txUser = db.users.find(u=>u.id===tx.userId);
-  res.json({ ...tx, user: txUser ? adminPublicUser(db, txUser) : { id: tx.userId } });
+app.get('/api/admin/transactions/:id', adminRequired, async (req, res) => {
+  try {
+    if (usingPostgres()) {
+      const tx = await pgDb.getTransactionById(req.params.id);
+      if (!tx) return res.status(404).json({ error: 'Transaction introuvable' });
+      const [bonusMap, vipMap] = await Promise.all([pgDb.getBonusTotalsMap(), pgDb.getVipLevelsMap()]);
+      const u = tx.userId ? await pgDb.getUserById(tx.userId) : null;
+      const shape = (u) => {
+        if (!u) return null;
+        const { passwordHash, ...rest } = u;
+        return { ...rest, bonus: bonusMap.get(u.id) ?? Math.round(Number(u.bonusTotal ?? u.bonus ?? 0)), vipLevel: vipMap.get(u.id) ?? Number(u.vipLevel || 0) };
+      };
+      return res.json({ ...tx, user: u ? shape(u) : { id: tx.userId } });
+    }
+    const db = readDb();
+    const tx = db.transactions.find(t => t.id === req.params.id);
+    if (!tx) return res.status(404).json({ error: 'Transaction introuvable' });
+    const txUser = db.users.find(u=>u.id===tx.userId);
+    res.json({ ...tx, user: txUser ? adminPublicUser(db, txUser) : { id: tx.userId } });
+  } catch (e) { console.error('admin tx detail error', e); res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
-app.get('/api/admin/users/:id', adminRequired, (req, res) => {
-  const db = readDb();
-  const u = db.users.find(x => x.id === req.params.id);
-  if (!u) return res.status(404).json({ error: 'Utilisateur introuvable' });
-  const direct = db.users.filter(x => x.referredBy === u.id).map(x => adminPublicUser(db, x));
-  const refUser = u.referredBy ? db.users.find(x => x.id === u.referredBy) : null;
-  const referrer = refUser ? adminPublicUser(db, refUser) : (u.referredBy ? { id: u.referredBy } : null);
-  const txs = db.transactions.filter(t => t.userId === u.id).sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
-  const purchases = db.purchases.filter(p => p.userId === u.id);
-  const view = { ...adminPublicUser(db, u), referrer, directReferrals: direct, referral: calcReferral(db, u.id), transactions: txs, purchases };
-  writeDb(db);
-  res.json(view);
+app.get('/api/admin/users/:id', adminRequired, async (req, res) => {
+  try {
+    if (usingPostgres()) {
+      const u = await pgDb.getUserById(req.params.id);
+      if (!u) return res.status(404).json({ error: 'Utilisateur introuvable' });
+      const [direct, txs, purchases, ms, bonusMap, vipMap, refData] = await Promise.all([
+        pgDb.getUsersByReferrer(u.id),
+        pgDb.getTransactionsByUser(u.id),
+        pgDb.getPurchasesByUser(u.id),
+        pgDb.getMachines(),
+        pgDb.getBonusTotalsMap(),
+        pgDb.getVipLevelsMap(),
+        pgDb.getReferralData(u.id),
+      ]);
+      const shape = (x) => {
+        if (!x) return null;
+        const { passwordHash, ...rest } = x;
+        return { ...rest, bonus: bonusMap.get(x.id) ?? Math.round(Number(x.bonusTotal ?? x.bonus ?? 0)), vipLevel: vipMap.get(x.id) ?? Number(x.vipLevel || 0) };
+      };
+      const refUser = u.referredBy ? await pgDb.getUserById(u.referredBy) : null;
+      const tiers = [{ count: 3, total: 700 }, { count: 5, total: 1200 }, { count: 10, total: 3000 }, { count: 15, total: 5000 }];
+      let inviteBonusTarget = 0;
+      const directCount = direct.length;
+      for (const t of tiers) if (directCount >= t.count) inviteBonusTarget = t.total;
+      const memberInfo = (m) => ({ id: m.id, memberId: m.memberId || '', username: m.username || 'Utilisateur', phone: m.phone || '', createdAt: m.createdAt || '', vipLevel: vipMap.get(m.id) ?? Number(m.vipLevel || 0) });
+      const referral = refData ? {
+        code: u.inviteCode,
+        link: `${APP_BASE_URL}/invite/${u.inviteCode || ''}`,
+        totalEarned: refData.totalEarned,
+        inviteBonus: { directCount, awarded: Number(u.inviteBonusAwarded || 0), target: inviteBonusTarget, tiers },
+        levels: [
+          { level: 1, count: refData.levelsUsers[0].length, commission: Math.round(refData.commissions[0] || 0), rate: 27, members: refData.levelsUsers[0].map(memberInfo) },
+          { level: 2, count: refData.levelsUsers[1].length, commission: Math.round(refData.commissions[1] || 0), rate: 3, members: refData.levelsUsers[1].map(memberInfo) },
+          { level: 3, count: refData.levelsUsers[2].length, commission: Math.round(refData.commissions[2] || 0), rate: 1, members: refData.levelsUsers[2].map(memberInfo) },
+        ],
+        teams: [
+          { name: 'Équipe A', count: refData.levelsUsers[0].length },
+          { name: 'Équipe B', count: refData.levelsUsers[1].length },
+          { name: 'Équipe C', count: refData.levelsUsers[2].length },
+        ],
+      } : calcReferral(readDb(), u.id);
+      const shapedPurchases = purchases.map(p => enrichPurchaseFromMachines(p, ms));
+      const view = {
+        ...shape(u),
+        referrer: refUser ? shape(refUser) : (u.referredBy ? { id: u.referredBy } : null),
+        directReferrals: direct.map(shape),
+        referral,
+        transactions: txs.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||'')),
+        purchases: shapedPurchases,
+      };
+      return res.json(view);
+    }
+    const db = readDb();
+    const u = db.users.find(x => x.id === req.params.id);
+    if (!u) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    const direct = db.users.filter(x => x.referredBy === u.id).map(x => adminPublicUser(db, x));
+    const refUser = u.referredBy ? db.users.find(x => x.id === u.referredBy) : null;
+    const referrer = refUser ? adminPublicUser(db, refUser) : (u.referredBy ? { id: u.referredBy } : null);
+    const txs = db.transactions.filter(t => t.userId === u.id).sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+    const purchases = db.purchases.filter(p => p.userId === u.id);
+    const view = { ...adminPublicUser(db, u), referrer, directReferrals: direct, referral: calcReferral(db, u.id), transactions: txs, purchases };
+    writeDb(db);
+    res.json(view);
+  } catch (e) { console.error('admin user detail error', e); res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
 app.patch('/api/admin/users/:id', adminRequired, async (req, res) => {
@@ -1547,20 +1686,42 @@ app.delete('/api/admin/machines/:id', adminRequired, async (req, res) => {
   }
 });
 
-app.get('/api/admin/referrals/tree', adminRequired, (req, res) => {
-  const db = readDb();
-  const { userId } = req.query || {};
-  function node(u, depth = 0, max = 4) {
-    const kids = db.users.filter(x => x.referredBy === u.id).map(c => depth < max ? node(c, depth+1, max) : ({ id:c.id, username:c.username, phone:c.phone, memberId:c.memberId, children: [] }));
-    return { id: u.id, username: u.username, phone: u.phone, memberId: u.memberId, inviteCode: u.inviteCode, children: kids };
-  }
-  if (userId) {
-    const u = db.users.find(x => x.id === String(userId));
-    if (!u) return res.status(404).json({ error: 'Utilisateur introuvable' });
-    return res.json(node(u));
-  }
-  const roots = db.users.filter(u => !u.referredBy).map(u => node(u));
-  res.json(roots);
+app.get('/api/admin/referrals/tree', adminRequired, async (req, res) => {
+  try {
+    const { userId } = req.query || {};
+    if (usingPostgres()) {
+      const users = await pgDb.getAllUsers();
+      const byRef = new Map();
+      for (const u of users) {
+        const k = u.referredBy || null;
+        if (!byRef.has(k)) byRef.set(k, []);
+        byRef.get(k).push(u);
+      }
+      function node(u, depth = 0, max = 4) {
+        const kids = (byRef.get(u.id) || []).map(c => depth < max ? node(c, depth+1, max) : ({ id:c.id, username:c.username, phone:c.phone, memberId:c.memberId, children: [] }));
+        return { id: u.id, username: u.username, phone: u.phone, memberId: u.memberId, inviteCode: u.inviteCode, children: kids };
+      }
+      if (userId) {
+        const u = users.find(x => x.id === String(userId));
+        if (!u) return res.status(404).json({ error: 'Utilisateur introuvable' });
+        return res.json(node(u));
+      }
+      const roots = users.filter(u => !u.referredBy).map(u => node(u));
+      return res.json(roots);
+    }
+    const db = readDb();
+    function node(u, depth = 0, max = 4) {
+      const kids = db.users.filter(x => x.referredBy === u.id).map(c => depth < max ? node(c, depth+1, max) : ({ id:c.id, username:c.username, phone:c.phone, memberId:c.memberId, children: [] }));
+      return { id: u.id, username: u.username, phone: u.phone, memberId: u.memberId, inviteCode: u.inviteCode, children: kids };
+    }
+    if (userId) {
+      const u = db.users.find(x => x.id === String(userId));
+      if (!u) return res.status(404).json({ error: 'Utilisateur introuvable' });
+      return res.json(node(u));
+    }
+    const roots = db.users.filter(u => !u.referredBy).map(u => node(u));
+    res.json(roots);
+  } catch (e) { console.error('admin referrals tree error', e); res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
 
