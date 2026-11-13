@@ -337,13 +337,16 @@ app.post('/api/auth/register', async (req, res) => {
         const userId = uid('usr');
         const nowIso = new Date().toISOString();
         const hash = await bcrypt.hash(password, 10);
+        const signupTxId = uid('tx');
+        const welcomeNtfId = uid('ntf');
+        let milestoneEvent = null;
         await client.query(`INSERT INTO users (id,member_id,username,phone,country,invite_code,referred_by,password_hash,balance,bonus_total,vip_level,onboarding_done,invite_bonus_awarded,created_at,updated_at)
           VALUES ($1,$2,'Utilisateur',$3,$4,$5,$6,$7,600,0,0,false,0,$8,NOW())`,
           [userId, memberId, phone, country || 'BF', newInvite, referrer ? referrer.id : null, hash, nowIso]);
         await client.query(`INSERT INTO transactions (id,user_id,type,amount,status,label,created_at,updated_at) VALUES ($1,$2,'bonus',600,'confirmed',$3,$4,NOW())`,
-          [uid('tx'), userId, "Bonus d'inscription", nowIso]);
+          [signupTxId, userId, "Bonus d'inscription", nowIso]);
         await client.query(`INSERT INTO notifications (id,user_id,title,text,type,read,created_at) VALUES ($1,$2,$3,$4,'info',false,$5)`,
-          [uid('ntf'), userId, 'Bienvenue sur FITZONE', 'Votre compte a été créé avec succès. Bonus d’inscription de 600 FCFA ajouté à votre solde.', nowIso]);
+          [welcomeNtfId, userId, 'Bienvenue sur FITZONE', 'Votre compte a été créé avec succès. Bonus d’inscription de 600 FCFA ajouté à votre solde.', nowIso]);
 
         // award invite milestones to referrer
         if (referrer) {
@@ -355,46 +358,38 @@ app.post('/api/auth/register', async (req, res) => {
           const awarded = Number(refRes.rows[0]?.invite_bonus_awarded || 0);
           if (target > awarded) {
             const delta = target - awarded;
+            const mTxId = uid('tx'); const mNtfId = uid('ntf');
             await client.query('UPDATE users SET balance = balance + $1, invite_bonus_awarded=$2, updated_at=NOW() WHERE id=$3', [delta, target, referrer.id]);
             await client.query(`INSERT INTO transactions (id,user_id,type,amount,status,label,created_at,updated_at) VALUES ($1,$2,'bonus',$3,'confirmed',$4,$5,NOW())`,
-              [uid('tx'), referrer.id, delta, `Bonus invitation (${directCount} invités)`, nowIso]);
+              [mTxId, referrer.id, delta, `Bonus invitation (${directCount} invités)`, nowIso]);
             await client.query(`INSERT INTO notifications (id,user_id,title,text,type,read,created_at) VALUES ($1,$2,$3,$4,'wallet',false,$5)`,
-              [uid('ntf'), referrer.id, 'Bonus d’invitation', `Félicitations ! Vous avez atteint ${directCount} invités et reçu ${delta.toLocaleString('fr-FR')} FCFA.`, nowIso]);
+              [mNtfId, referrer.id, 'Bonus d’invitation', `Félicitations ! Vous avez atteint ${directCount} invités et reçu ${delta.toLocaleString('fr-FR')} FCFA.`, nowIso]);
+            milestoneEvent = { referrerId: referrer.id, delta, target, directCount, txId: mTxId, ntfId: mNtfId };
           }
         }
 
         await client.query('COMMIT');
         const db = readDb();
         const nowIsoMem = nowIso;
-        const bonusTxId = uid('tx');
-        const welcomeNtfId = uid('ntf');
         const user = {
           id: userId, memberId, username: 'Utilisateur', phone, country: country || 'BF', inviteCode: newInvite,
           referredBy: referrer ? referrer.id : null, passwordHash: hash, balance: 600, bonus: 600,
           onboardingDone: false, inviteBonusAwarded: 0, vipLevel: 0, createdAt: nowIsoMem,
         };
-        db.users = db.users || []; db.users.push(user);
+        db.users = db.users || []; if (!db.users.some(u=>u.id===userId)) db.users.push(user);
         db.transactions = db.transactions || [];
-        db.transactions.unshift({ id: bonusTxId, userId, type: 'bonus', amount: 600, status: 'confirmed', label: "Bonus d'inscription", createdAt: nowIsoMem });
+        if (!db.transactions.some(t=>t.id===signupTxId)) db.transactions.unshift({ id: signupTxId, userId, type: 'bonus', amount: 600, status: 'confirmed', label: "Bonus d'inscription", createdAt: nowIsoMem });
         db.notifications = db.notifications || [];
-        db.notifications.unshift({ id: welcomeNtfId, userId, title: 'Bienvenue sur FITZONE', text: 'Votre compte a été créé avec succès. Bonus d’inscription de 600 FCFA ajouté à votre solde.', type: 'info', read: false, createdAt: nowIsoMem });
-        if (referrer) {
-          // milestone effects may have been applied in DB; refresh referrer-related state minimally by recomputing from DB? fallback: init-lite via counts in memory not perfect; but easier: reload just referrer state is complex. Keep simple: update in-memory referrer if milestone awarded.
+        if (!db.notifications.some(n=>n.id===welcomeNtfId)) db.notifications.unshift({ id: welcomeNtfId, userId, title: 'Bienvenue sur FITZONE', text: 'Votre compte a été créé avec succès. Bonus d’inscription de 600 FCFA ajouté à votre solde.', type: 'info', read: false, createdAt: nowIsoMem });
+        if (milestoneEvent) {
           try {
-            const tiers = [{count:3,total:700},{count:5,total:1200},{count:10,total:3000},{count:15,total:5000}];
-            const directCount = (db.users||[]).filter(u=>u.referredBy===referrer.id).length;
-            let target=0; for (const t of tiers) if (directCount>=t.count) target=t.total;
-            const refU = (db.users||[]).find(u=>u.id===referrer.id);
+            const refU = (db.users||[]).find(u=>u.id===milestoneEvent.referrerId);
             if (refU) {
-              const awarded = Number(refU.inviteBonusAwarded||0);
-              if (target>awarded) {
-                const delta = target-awarded;
-                refU.balance = Number(refU.balance||0)+delta;
-                refU.inviteBonusAwarded = target;
-                db.transactions.unshift({ id: uid('tx'), userId: refU.id, type: 'bonus', amount: delta, status: 'confirmed', label: `Bonus invitation (${directCount} invités)`, createdAt: nowIsoMem });
-                db.notifications.unshift({ id: uid('ntf'), userId: refU.id, title: 'Bonus d’invitation', text: `Félicitations ! Vous avez atteint ${directCount} invités et reçu ${delta.toLocaleString('fr-FR')} FCFA.`, type: 'wallet', read: false, createdAt: nowIsoMem });
-              }
+              refU.balance = Number(refU.balance||0) + milestoneEvent.delta;
+              refU.inviteBonusAwarded = milestoneEvent.target;
             }
+            if (!db.transactions.some(t=>t.id===milestoneEvent.txId)) db.transactions.unshift({ id: milestoneEvent.txId, userId: milestoneEvent.referrerId, type: 'bonus', amount: milestoneEvent.delta, status: 'confirmed', label: `Bonus invitation (${milestoneEvent.directCount} invités)`, createdAt: nowIsoMem });
+            if (!db.notifications.some(n=>n.id===milestoneEvent.ntfId)) db.notifications.unshift({ id: milestoneEvent.ntfId, userId: milestoneEvent.referrerId, title: 'Bonus d’invitation', text: `Félicitations ! Vous avez atteint ${milestoneEvent.directCount} invités et reçu ${milestoneEvent.delta.toLocaleString('fr-FR')} FCFA.`, type: 'wallet', read: false, createdAt: nowIsoMem });
           } catch {}
         }
         const token = sign({ id: userId, phone });
@@ -618,9 +613,9 @@ app.post('/api/wallet/deposit', authRequired, async (req, res) => {
         const recent = await client.query(`SELECT 1 FROM transactions WHERE user_id=$1 AND type='deposit' AND amount=$2 AND method=$3 AND created_at > NOW() - INTERVAL '60 seconds' LIMIT 1`, [req.user.id, amt, method || 'otp']);
         if (recent.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Dépôt déjà soumis, veuillez patienter' }); }
         await client.query('UPDATE users SET balance = balance + $1, updated_at=NOW() WHERE id=$2', [amt, req.user.id]);
-        const txId = uid('tx'); const nowIso = new Date().toISOString();
+        const txId = uid('tx'); const ntfId = uid('ntf'); const nowIso = new Date().toISOString();
         await client.query(`INSERT INTO transactions (id,user_id,type,amount,status,method,label,created_at,updated_at) VALUES ($1,$2,'deposit',$3,'pending',$4,'Dépôt',$5,NOW())`, [txId, req.user.id, amt, method || 'otp', nowIso]);
-        await client.query(`INSERT INTO notifications (id,user_id,title,text,type,read,created_at) VALUES ($1,$2,$3,$4,'wallet',false,$5)`, [uid('ntf'), req.user.id, 'Dépôt soumis', `Votre dépôt de ${amt.toLocaleString('fr-FR')} FCFA a été ajouté à votre solde et est en attente de confirmation.`, nowIso]);
+        await client.query(`INSERT INTO notifications (id,user_id,title,text,type,read,created_at) VALUES ($1,$2,$3,$4,'wallet',false,$5)`, [ntfId, req.user.id, 'Dépôt soumis', `Votre dépôt de ${amt.toLocaleString('fr-FR')} FCFA a été ajouté à votre solde et est en attente de confirmation.`, nowIso]);
         await client.query('COMMIT');
         const db = readDb();
         const user = db.users.find(u => u.id === req.user.id);
@@ -629,7 +624,7 @@ app.post('/api/wallet/deposit', authRequired, async (req, res) => {
         db.transactions = db.transactions || [];
         db.transactions.unshift(tx);
         db.notifications = db.notifications || [];
-        db.notifications.unshift({ id: uid('ntf'), userId: req.user.id, title: 'Dépôt soumis', text: `Votre dépôt de ${amt.toLocaleString('fr-FR')} FCFA a été ajouté à votre solde et est en attente de confirmation.`, type: 'wallet', read: false, createdAt: nowIso });
+        db.notifications.unshift({ id: ntfId, userId: req.user.id, title: 'Dépôt soumis', text: `Votre dépôt de ${amt.toLocaleString('fr-FR')} FCFA a été ajouté à votre solde et est en attente de confirmation.`, type: 'wallet', read: false, createdAt: nowIso });
         return res.json({ balance: user?.balance ?? Number(uRes.rows[0].balance || 0) + amt, transaction: tx });
       } catch (e) {
         try { await client.query('ROLLBACK'); } catch {}
@@ -677,10 +672,10 @@ app.post('/api/wallet/withdraw', authRequired, async (req, res) => {
         const uRes = await client.query('SELECT id,balance FROM users WHERE id=$1 FOR UPDATE', [req.user.id]);
         if (!uRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Utilisateur introuvable' }); }
         const bal = Number(uRes.rows[0].balance || 0);
-        if (bal < amt) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Solde insuffisant' }); }
         const depOk = await client.query(`SELECT 1 FROM transactions WHERE user_id=$1 AND type='deposit' AND status='confirmed' AND amount >= 2500 LIMIT 1`, [req.user.id]);
         const purchaseOk = await client.query(`SELECT 1 FROM purchases WHERE user_id=$1 LIMIT 1`, [req.user.id]);
         if (!depOk.rowCount || !purchaseOk.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Retrait impossible : vous devez effectuer un premier dépôt d’au moins 2 500 FCFA (confirmé) et acheter une machine avant de pouvoir retirer.' }); }
+        if (bal < amt) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Solde insuffisant' }); }
         const recent = await client.query(`SELECT 1 FROM transactions WHERE user_id=$1 AND type='withdraw' AND status='pending' AND amount=$2 AND phone=$3 AND created_at > NOW() - INTERVAL '60 seconds' LIMIT 1`, [req.user.id, amt, phone]);
         if (recent.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Demande de retrait déjà en cours de traitement' }); }
         await client.query('UPDATE users SET balance = balance - $1, updated_at=NOW() WHERE id=$2', [amt, req.user.id]);
@@ -703,10 +698,10 @@ app.post('/api/wallet/withdraw', authRequired, async (req, res) => {
     const db = readDb();
     const user = db.users.find(u => u.id === req.user.id);
     if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
-    if ((user.balance || 0) < amt) return res.status(400).json({ error: 'Solde insuffisant' });
     const hasEligibleDeposit = (db.transactions || []).some(t => t.userId === user.id && t.type === 'deposit' && t.status === 'confirmed' && Number(t.amount || 0) >= 2500);
     const hasPurchase = (db.purchases || []).some(p => p.userId === user.id);
     if (!hasEligibleDeposit || !hasPurchase) return res.status(400).json({ error: 'Retrait impossible : vous devez effectuer un premier dépôt d’au moins 2 500 FCFA (confirmé) et acheter une machine avant de pouvoir retirer.' });
+    if ((user.balance || 0) < amt) return res.status(400).json({ error: 'Solde insuffisant' });
     const recent = db.transactions.find(t => t.userId === user.id && t.type === 'withdraw' && t.status === 'pending' && Number(t.amount) === amt && t.phone === phone && (Date.now() - new Date(t.createdAt).getTime()) < 60000);
     if (recent) return res.status(400).json({ error: 'Demande de retrait déjà en cours de traitement' });
     user.balance -= amt;
@@ -879,16 +874,19 @@ app.post('/api/purchases', authRequired, async (req, res) => {
 
         const nowIso = new Date().toISOString();
         const purchaseId = uid('pur');
+        const purchaseTxId = uid('tx');
+        const buyerNtfId = uid('ntf');
+        const commissionEvents = [];
         await client.query('UPDATE users SET balance = balance - $1, updated_at=NOW() WHERE id=$2', [Number(m.priceFcfa), req.user.id]);
         await client.query(`INSERT INTO purchases (id,user_id,machine_id,amount,daily_revenue,duration_days,total_revenue,status,created_at)
           VALUES ($1,$2,$3,$4,$5,$6,$7,'active',$8)`,
           [purchaseId, req.user.id, m.id, Number(m.priceFcfa), Number(m.dailyRevenueFcfa), Number(m.durationDays), Number(m.dailyRevenueFcfa) * Number(m.durationDays), nowIso]);
         await client.query(`INSERT INTO transactions (id,user_id,type,amount,status,label,created_at,updated_at)
           VALUES ($1,$2,'purchase',$3,'confirmed',$4,$5,NOW())`,
-          [uid('tx'), req.user.id, -Number(m.priceFcfa), `Achat ${m.name}`, nowIso]);
+          [purchaseTxId, req.user.id, -Number(m.priceFcfa), `Achat ${m.name}`, nowIso]);
         await client.query(`INSERT INTO notifications (id,user_id,title,text,type,read,created_at)
           VALUES ($1,$2,$3,$4,'purchase',false,$5)`,
-          [uid('ntf'), req.user.id, 'Machine activée', `${m.name} a été activée avec succès.`, nowIso]);
+          [buyerNtfId, req.user.id, 'Machine activée', `${m.name} a été activée avec succès.`, nowIso]);
 
         // referral commissions 27/3/1%
         const rates = [0.27, 0.03, 0.01];
@@ -901,14 +899,16 @@ app.post('/api/purchases', authRequired, async (req, res) => {
           if (!exists.rowCount) {
             const amount = Math.round(Number(m.priceFcfa) * rates[level - 1]);
             if (amount > 0) {
+              const ctxId = uid('tx'); const cntfId = uid('ntf');
               await client.query('UPDATE users SET balance = balance + $1, updated_at=NOW() WHERE id=$2', [amount, refUser.id]);
               const pct = Math.round(rates[level - 1] * 100);
               await client.query(`INSERT INTO transactions (id,user_id,type,amount,status,level,source_purchase_id,label,created_at,updated_at)
                 VALUES ($1,$2,'commission',$3,'confirmed',$4,$5,$6,$7,NOW())`,
-                [uid('tx'), refUser.id, amount, level, purchaseId, `Commission parrainage N${level}`, nowIso]);
+                [ctxId, refUser.id, amount, level, purchaseId, `Commission parrainage N${level}`, nowIso]);
               await client.query(`INSERT INTO notifications (id,user_id,title,text,type,read,created_at)
                 VALUES ($1,$2,'Commission reçue',$3,'wallet',false,$4)`,
-                [uid('ntf'), refUser.id, `Une personne que vous avez invitée (niveau ${level}, ${pct}%) a acheté une machine. Vous recevez ${amount.toLocaleString('fr-FR')} FCFA, ajoutés à votre solde.`, nowIso]);
+                [cntfId, refUser.id, `Une personne que vous avez invitée (niveau ${level}, ${pct}%) a acheté une machine. Vous recevez ${amount.toLocaleString('fr-FR')} FCFA, ajoutés à votre solde.`, nowIso]);
+              commissionEvents.push({ level, userId: refUser.id, amount, txId: ctxId, ntfId: cntfId, pct });
             }
           }
           refId = refUser.referred_by || null;
@@ -923,19 +923,18 @@ app.post('/api/purchases', authRequired, async (req, res) => {
           dailyRevenue: Number(m.dailyRevenueFcfa), durationDays: Number(m.durationDays),
           totalRevenue: Number(m.dailyRevenueFcfa) * Number(m.durationDays), status: 'active', collectedDays: 0, createdAt: nowIso,
         };
-        db.purchases = db.purchases || []; db.purchases.unshift(purchase);
+        db.purchases = db.purchases || []; if (!db.purchases.some(p=>p.id===purchaseId)) db.purchases.unshift(purchase);
         db.transactions = db.transactions || [];
-        db.transactions.unshift({ id: uid('tx'), userId: req.user.id, type: 'purchase', amount: -Number(m.priceFcfa), status: 'confirmed', label: `Achat ${m.name}`, createdAt: nowIso });
+        if (!db.transactions.some(t=>t.id===purchaseTxId)) db.transactions.unshift({ id: purchaseTxId, userId: req.user.id, type: 'purchase', amount: -Number(m.priceFcfa), status: 'confirmed', label: `Achat ${m.name}`, createdAt: nowIso });
         db.notifications = db.notifications || [];
-        db.notifications.unshift({ id: uid('ntf'), userId: req.user.id, title: 'Machine activée', text: `${m.name} a été activée avec succès.`, type: 'purchase', read: false, createdAt: nowIso });
-        // commissions effects applied in DB; update in-memory upline balances/tx/notifications best-effort
+        if (!db.notifications.some(n=>n.id===buyerNtfId)) db.notifications.unshift({ id: buyerNtfId, userId: req.user.id, title: 'Machine activée', text: `${m.name} a été activée avec succès.`, type: 'purchase', read: false, createdAt: nowIso });
+        // commissions effects applied in DB; update in-memory using same IDs
         try {
-          const rates = [0.27,0.03,0.01]; let refId = buyer.referred_by || null;
-          for (let level=1; level<=3 && refId; level++) {
-            const refU = (db.users||[]).find(u=>u.id===refId); if(!refU) break;
-            const exists = (db.transactions||[]).some(t=>t.type==='commission' && t.sourcePurchaseId===purchaseId && Number(t.level)===level);
-            if(!exists){ const amount=Math.round(Number(m.priceFcfa)*rates[level-1]); if(amount>0){ refU.balance=Number(refU.balance||0)+amount; const pct=Math.round(rates[level-1]*100); db.transactions.unshift({id:uid('tx'),userId:refU.id,type:'commission',amount,status:'confirmed',level,sourcePurchaseId:purchaseId,label:`Commission parrainage N${level}`,createdAt:nowIso}); db.notifications.unshift({id:uid('ntf'),userId:refU.id,title:'Commission reçue',text:`Une personne que vous avez invitée (niveau ${level}, ${pct}%) a acheté une machine. Vous recevez ${amount.toLocaleString('fr-FR')} FCFA, ajoutés à votre solde.`,type:'wallet',read:false,createdAt:nowIso}); }}
-            refId = refU.referredBy || null;
+          for (const ev of commissionEvents) {
+            const refU = (db.users||[]).find(u=>u.id===ev.userId);
+            if (refU) refU.balance = Number(refU.balance||0) + ev.amount;
+            if (!db.transactions.some(t=>t.id===ev.txId)) db.transactions.unshift({id:ev.txId,userId:ev.userId,type:'commission',amount:ev.amount,status:'confirmed',level:ev.level,sourcePurchaseId:purchaseId,label:`Commission parrainage N${ev.level}`,createdAt:nowIso});
+            if (!db.notifications.some(n=>n.id===ev.ntfId)) db.notifications.unshift({id:ev.ntfId,userId:ev.userId,title:'Commission reçue',text:`Une personne que vous avez invitée (niveau ${ev.level}, ${ev.pct}%) a acheté une machine. Vous recevez ${ev.amount.toLocaleString('fr-FR')} FCFA, ajoutés à votre solde.`,type:'wallet',read:false,createdAt:nowIso});
           }
         } catch {}
         return res.json({ balance: user?.balance ?? 0, purchase: enrichPurchase(purchase, db) });
@@ -1626,6 +1625,8 @@ app.patch('/api/admin/users/:id', adminRequired, async (req, res) => {
         const uRes = await client.query('SELECT id,balance FROM users WHERE id=$1 FOR UPDATE', [req.params.id]);
         if (!uRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Utilisateur introuvable' }); }
         const changed = [];
+        let adjTx = null;
+        const nowIso = new Date().toISOString();
         if (username !== undefined) {
           await client.query('UPDATE users SET username=$1, updated_at=NOW() WHERE id=$2', [String(username).trim().slice(0,30), req.params.id]);
           changed.push('username');
@@ -1636,12 +1637,15 @@ app.patch('/api/admin/users/:id', adminRequired, async (req, res) => {
           const current = Number(uRes.rows[0].balance || 0);
           const delta = Math.round((target - current) * 100) / 100;
           if (delta !== 0) {
+            const txId = uid('tx');
             await client.query('UPDATE users SET balance=$1, updated_at=NOW() WHERE id=$2', [target, req.params.id]);
-            await client.query(`INSERT INTO transactions (id,user_id,type,amount,status,label,created_at,updated_at) VALUES ($1,$2,'adjustment',$3,'confirmed','Ajustement admin (solde)',$4,NOW())`, [uid('tx'), req.params.id, delta, new Date().toISOString()]);
+            await client.query(`INSERT INTO transactions (id,user_id,type,amount,status,label,created_at,updated_at) VALUES ($1,$2,'adjustment',$3,'confirmed','Ajustement admin (solde)',$4,NOW())`, [txId, req.params.id, delta, nowIso]);
+            adjTx = { id: txId, userId: req.params.id, type: 'adjustment', amount: delta, status: 'confirmed', label: 'Ajustement admin (solde)', createdAt: nowIso };
             changed.push('balance');
           }
         }
-        await client.query('INSERT INTO audit_logs (id,action,details,admin,created_at) VALUES ($1,$2,$3::jsonb,$4,NOW())',[uid('log'),'user.update', JSON.stringify({ id: req.params.id, fields: changed }), (req.admin?.phone||'admin')]);
+        const logId = uid('log');
+        await client.query('INSERT INTO audit_logs (id,action,details,admin,created_at) VALUES ($1,$2,$3::jsonb,$4,NOW())',[logId,'user.update', JSON.stringify({ id: req.params.id, fields: changed }), (req.admin?.phone||'admin')]);
         await client.query('COMMIT');
         const db = readDb();
         const u = db.users.find(x => x.id === req.params.id);
@@ -1649,18 +1653,16 @@ app.patch('/api/admin/users/:id', adminRequired, async (req, res) => {
           if (username !== undefined) u.username = String(username).trim().slice(0, 30);
           if (balance !== undefined) {
             const target = Number(balance);
-            const current = Number(uRes.rows[0].balance || 0);
-            const delta = Math.round((target - current) * 100) / 100;
-            if (delta !== 0) {
+            if (adjTx) {
               u.balance = target;
               db.transactions = db.transactions || [];
-              db.transactions.unshift({ id: uid('tx'), userId: u.id, type: 'adjustment', amount: delta, status: 'confirmed', label: 'Ajustement admin (solde)', createdAt: new Date().toISOString() });
+              if (!db.transactions.some(t=>t.id===adjTx.id)) db.transactions.unshift(adjTx);
             }
           }
           u.bonus = computeBonusTotal(db, u.id);
         }
         db.auditLogs = db.auditLogs || [];
-        db.auditLogs.unshift({ id: uid('log'), action: 'user.update', details: { id: req.params.id, fields: changed }, admin: (req.admin?.phone||'admin'), createdAt: new Date().toISOString() });
+        if (!db.auditLogs.some(l=>l.id===logId)) db.auditLogs.unshift({ id: logId, action: 'user.update', details: { id: req.params.id, fields: changed }, admin: (req.admin?.phone||'admin'), createdAt: new Date().toISOString() });
         return res.json(u ? adminPublicUser(db, u) : { id: req.params.id });
       } catch (e) { try { await client.query('ROLLBACK'); } catch {} throw e; }
       finally { client.release(); }
