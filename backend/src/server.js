@@ -519,9 +519,12 @@ app.patch('/api/profile', authRequired, async (req, res) => {
         vals.push(req.user.id);
         await client.query(`UPDATE users SET ${sets.join(', ')} WHERE id=$${i}`, vals);
         await client.query('COMMIT');
-        try { await initDb(); } catch {}
         const db = readDb();
         const user = db.users.find(u => u.id === req.user.id);
+        if (user) {
+          if (username !== undefined) user.username = String(username).trim().slice(0, 20);
+          if (onboardingDone !== undefined) user.onboardingDone = !!onboardingDone;
+        }
         return res.json(ensureUserShape(user, db));
       } catch (e) {
         try { await client.query('ROLLBACK'); } catch {}
@@ -589,11 +592,15 @@ app.post('/api/wallet/deposit', authRequired, async (req, res) => {
         await client.query(`INSERT INTO transactions (id,user_id,type,amount,status,method,label,created_at,updated_at) VALUES ($1,$2,'deposit',$3,'pending',$4,'Dépôt',$5,NOW())`, [txId, req.user.id, amt, method || 'otp', nowIso]);
         await client.query(`INSERT INTO notifications (id,user_id,title,text,type,read,created_at) VALUES ($1,$2,$3,$4,'wallet',false,$5)`, [uid('ntf'), req.user.id, 'Dépôt soumis', `Votre dépôt de ${amt.toLocaleString('fr-FR')} FCFA a été ajouté à votre solde et est en attente de confirmation.`, nowIso]);
         await client.query('COMMIT');
-        try { await initDb(); } catch {}
         const db = readDb();
         const user = db.users.find(u => u.id === req.user.id);
-        const tx = (db.transactions || []).find(t => t.id === txId) || { id: txId, userId: req.user.id, type: 'deposit', amount: amt, status: 'pending', method: method || 'otp', label: 'Dépôt', createdAt: nowIso };
-        return res.json({ balance: user?.balance ?? 0, transaction: tx });
+        const tx = { id: txId, userId: req.user.id, type: 'deposit', amount: amt, status: 'pending', method: method || 'otp', label: 'Dépôt', createdAt: nowIso };
+        if (user) user.balance = Number(user.balance || 0) + amt;
+        db.transactions = db.transactions || [];
+        db.transactions.unshift(tx);
+        db.notifications = db.notifications || [];
+        db.notifications.unshift({ id: uid('ntf'), userId: req.user.id, title: 'Dépôt soumis', text: `Votre dépôt de ${amt.toLocaleString('fr-FR')} FCFA a été ajouté à votre solde et est en attente de confirmation.`, type: 'wallet', read: false, createdAt: nowIso });
+        return res.json({ balance: user?.balance ?? Number(uRes.rows[0].balance || 0) + amt, transaction: tx });
       } catch (e) {
         try { await client.query('ROLLBACK'); } catch {}
         throw e;
@@ -647,11 +654,13 @@ app.post('/api/wallet/withdraw', authRequired, async (req, res) => {
         const txId = uid('tx'); const nowIso = new Date().toISOString();
         await client.query(`INSERT INTO transactions (id,user_id,type,amount,fee,received,status,label,phone,beneficiary,created_at,updated_at) VALUES ($1,$2,'withdraw',$3,$4,$5,'pending','Retrait',$6,$7,$8,NOW())`, [txId, req.user.id, amt, fee, received, phone, beneficiary, nowIso]);
         await client.query('COMMIT');
-        try { await initDb(); } catch {}
         const db = readDb();
         const user = db.users.find(u => u.id === req.user.id);
-        const tx = (db.transactions || []).find(t => t.id === txId) || { id: txId, userId: req.user.id, type: 'withdraw', amount: amt, fee, received, status: 'pending', label: 'Retrait', phone, beneficiary, createdAt: nowIso };
-        return res.json({ balance: user?.balance ?? 0, transaction: tx });
+        const tx = { id: txId, userId: req.user.id, type: 'withdraw', amount: amt, fee, received, status: 'pending', label: 'Retrait', phone, beneficiary, createdAt: nowIso };
+        if (user) user.balance = Math.max(0, Number(user.balance || 0) - amt);
+        db.transactions = db.transactions || [];
+        db.transactions.unshift(tx);
+        return res.json({ balance: user?.balance ?? Math.max(0, bal - amt), transaction: tx });
       } catch (e) {
         try { await client.query('ROLLBACK'); } catch {}
         throw e;
@@ -691,11 +700,18 @@ app.post('/api/wallet/claim-daily', authRequired, async (req, res) => {
         const txId = uid('tx'); const nowIso = new Date().toISOString();
         await client.query(`INSERT INTO transactions (id,user_id,type,amount,status,label,created_at,updated_at) VALUES ($1,$2,'bonus',50,'confirmed','Bonus quotidien',$3,NOW())`, [txId, req.user.id, nowIso]);
         await client.query('COMMIT');
-        try { await initDb(); } catch {}
         const db = readDb();
         const user = db.users.find(u => u.id === req.user.id);
-        const tx = (db.transactions || []).find(t => t.id === txId) || { id: txId, userId: req.user.id, type: 'bonus', amount: 50, status: 'confirmed', label: 'Bonus quotidien', createdAt: nowIso };
-        return res.json({ balance: user?.balance ?? 0, bonus: computeBonusTotal(db, req.user.id), transaction: tx });
+        const tx = { id: txId, userId: req.user.id, type: 'bonus', amount: 50, status: 'confirmed', label: 'Bonus quotidien', createdAt: nowIso };
+        if (user) {
+          user.balance = Number(user.balance || 0) + 50;
+          user.lastClaimDate = today;
+        }
+        db.transactions = db.transactions || [];
+        db.transactions.unshift(tx);
+        const bonus = computeBonusTotal(db, req.user.id);
+        if (user) user.bonus = bonus;
+        return res.json({ balance: user?.balance ?? 0, bonus, transaction: tx });
       } catch (e) {
         try { await client.query('ROLLBACK'); } catch {}
         throw e;
